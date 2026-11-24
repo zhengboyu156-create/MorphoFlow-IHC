@@ -8,6 +8,8 @@ Morphology-conditioned flow matching and single-step trajectory optimization for
 
 ## 数据与安装
 
+MIST HER2 原始配对图位于 [datasets/MIST_HER2](datasets/MIST_HER2/README.md)，图片使用 Git LFS。数据授权和引用要求以原发布方为准。
+
 使用 Python 3.10–3.12、PyTorch 2.8 或兼容构建。RTX 5070 Ti 可先安装官方 cu128 构建。CPU 支持用于功能检查。源项目的许可和固定版本见 [上游来源](docs/UPSTREAM.md)。
 
 ```bash
