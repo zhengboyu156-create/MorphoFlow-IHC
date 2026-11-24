@@ -48,3 +48,29 @@ python -m pytest -q
 The manifest must include both train HE and train IHC images. Cache format 2 is retained; new checkpoints use **format 3** and reject prior checkpoint formats because the objective and model changed. The image output is directly generated RGB; the optional DAB map is calculated from it for diagnostics only. `nce_steps` is a short training rollout and can differ from inference `ode_steps`.
 
 Original compositor code remains in Git history; the prior RGB/PatchNCE self-conditioning prototype remains at `3a4a4e283cdafcc6763f4c9e8b7d7a11eabf8bf4` (PR #1).
+
+## Weak expression supervision for unpaired images
+
+Use independent H&E and IHC case groups. Add these fields to the training manifest:
+
+| Column | Values |
+| --- | --- |
+| `label` | Binary expression endpoint, `0` or `1` |
+| `label_source` | `independent_assay` for H&E, `ihc_annotation` for real IHC. Record the actual provenance externally. |
+| `expression_scope` | `region` for a whole preselected region or `slide` for a whole slide image |
+| `expression_endpoint` | The same explicit binary endpoint identifier in both domains for each marker |
+
+Specify the marker on every labeled row, including H&E rows. Each marker needs both classes in each domain's train and validation pools. Reuse the true patient/group ID across all rows and keep groups disjoint across splits and between training domains. The loader checks declared identity and provenance. Confirm actual case identity, label provenance and endpoint comparability before running. Labels copied from the corresponding MIST images would change the supervision protocol. The MIST archive has no independent H&E expression labels in its published manifest.
+
+```bash
+python -m morphoflow_ihc prepare --manifest expression.csv --config configs/mist_her2.json --output data/expression_cache
+python -m morphoflow_ihc train-expression --manifest expression.csv --config configs/mist_her2.json --output runs/scorers.pt
+python -m morphoflow_ihc train --cache data/expression_cache --config configs/mist_her2.json --expression-manifest expression.csv --expression runs/scorers.pt --output runs/expression_flow.pt
+python -m morphoflow_ihc train-rl --cache data/expression_cache --expression-manifest expression.csv --checkpoint runs/expression_flow.pt --objective ppo --output runs/policy_ppo.pt
+python -m morphoflow_ihc train-rl --cache data/expression_cache --expression-manifest expression.csv --checkpoint runs/expression_flow.pt --objective direct --output runs/policy_direct.pt
+python -m morphoflow_ihc infer --checkpoint runs/expression_flow.pt --image region.png --marker HER2 --expression-scope region --output prediction.png --maps prediction.npz
+```
+
+The scorer artifact includes per-domain, per-marker validation metrics. Training checks that both scorers beat a constant training-prevalence predictor in validation Brier score and rank the positive-class mean above the negative-class mean. This is a basic validation gate. Measure performance separately on independent patients and account for repeated units per patient. Both scorers are frozen during generation training. Scope applies to the whole image supplied to the scorer and to the generated unit. Inputs are resized and padded as whole units, including slide scope, which limits recoverable slide detail. A region score describes the whole region and is exported as a scalar. The optional DAB map describes the generated pixels separately.
+
+Start PPO and direct optimization from the same flow checkpoint and use equal rollout budgets. Test the base flow, PPO and direct optimization with a separate labeled test set, including any registered IHC localization data appropriate to the intended claims.

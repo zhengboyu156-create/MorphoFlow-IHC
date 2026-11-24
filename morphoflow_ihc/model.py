@@ -60,6 +60,8 @@ class StainFlow(nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
+        self.expression_info = None
+        self.expression_scorers = nn.ModuleDict()
         self.region = RegionPredictor(cfg)
         self.net = UNetModel(
             image_size=cfg.crop,
@@ -76,6 +78,30 @@ class StainFlow(nn.Module):
         self.matcher = ConditionalFlowMatcher(sigma=0.0)
         self.register_buffer("thresholds", torch.tensor(list(cfg.markers.values())))
 
+    def attach_expression(self, artifact):
+        from .expression import ExpressionScorer
+
+        if (artifact.get("format") != 1 or artifact.get("passed") is not True
+                or artifact.get("markers") != list(self.cfg.markers)
+                or artifact.get("crop") != self.cfg.crop):
+            raise ValueError("Expression artifact must pass validation and match the marker list and input size")
+        self.critic = IHCCritic(2 * len(self.cfg.markers)).to(self.thresholds.device)
+        self.expression_info = {key: artifact[key] for key in
+                                ("format", "passed", "markers", "crop", "scope", "manifest_digest", "report")}
+        for domain in ("HE", "IHC"):
+            scorer = ExpressionScorer(len(self.cfg.markers)).to(self.thresholds.device)
+            if "models" in artifact:
+                scorer.load_state_dict(artifact["models"][domain])
+            self.expression_scorers[domain] = scorer.eval().requires_grad_(False)
+
+    def he_condition(self, image, tissue, marker):
+        if self.expression_info is not None:
+            score = self.expression_scorers["HE"](image, marker).sigmoid()
+            # A single score describes the complete labeled unit, never its individual pixels.
+            return score[:, None, None, None]
+        he_h, default_tissue = he_projection(image, self.cfg)
+        return self.probability(he_h / self.cfg.h_scale, default_tissue if tissue is None else tissue, marker)
+
     def probability(self, h, tissue, marker):
         _, logits = self.region(h, tissue, marker)
         return logits.float().sigmoid()
@@ -85,33 +111,35 @@ class StainFlow(nn.Module):
         return self.net(t, features, y=marker).float()
 
     def losses(self, h, reference, tissue, marker, image, he):
-        base, logits = self.region(h, tissue, marker)
-        tau = self.thresholds[marker, None, None, None]
-        valid = tissue.float()
-        occupancy = F.avg_pool2d(valid, self.cfg.region)
-        target = F.avg_pool2d(((reference > tau) & tissue).float(), self.cfg.region)
-        target = target / occupancy.clamp_min(1e-8)
-        # A single proper scoring loss supervises both available views.
-        predictions = torch.cat((logits.float(), base.float()), dim=1)
-        bce = F.binary_cross_entropy_with_logits(predictions, target.expand_as(predictions), reduction="none")
-        weights = predictions.new_tensor([0.75, 0.25]).view(1, 2, 1, 1)
-        regions = (occupancy > 0).float()
-        region_loss = (bce * weights * regions).sum() / regions.sum().clamp_min(1)
+        region_loss = image.new_zeros(())
+        if self.expression_info is None:
+            base, logits = self.region(h, tissue, marker)
+            tau = self.thresholds[marker, None, None, None]
+            valid = tissue.float()
+            occupancy = F.avg_pool2d(valid, self.cfg.region)
+            target = F.avg_pool2d(((reference > tau) & tissue).float(), self.cfg.region)
+            target = target / occupancy.clamp_min(1e-8)
+            # A single proper scoring loss supervises both available views.
+            predictions = torch.cat((logits.float(), base.float()), dim=1)
+            bce = F.binary_cross_entropy_with_logits(predictions, target.expand_as(predictions), reduction="none")
+            weights = predictions.new_tensor([0.75, 0.25]).view(1, 2, 1, 1)
+            regions = (occupancy > 0).float()
+            region_loss = (bce * weights * regions).sum() / regions.sum().clamp_min(1)
         t, z, target_velocity = self.matcher.sample_location_and_conditional_flow(
             torch.randn_like(image), image
         )
         # The target image is deliberately absent from the conditioning channels.
         # This is an unconditional IHC velocity objective, not a paired HE objective.
-        prob = torch.zeros_like(logits)
+        prob = image.new_zeros((image.shape[0], 1, 1, 1)) if self.expression_info else torch.zeros_like(logits)
         prediction = self.velocity(t, z, torch.zeros_like(image), prob, marker)
         flow_loss = F.mse_loss(prediction, target_velocity)
-        he_h, he_tissue = he_projection(he, self.cfg)
-        he_prob = self.probability(he_h / self.cfg.h_scale, he_tissue, marker).detach()
+        he_prob = self.he_condition(he, None, marker).detach()
         # Unroll from noise to an endpoint conditioned on an independent HE crop.
         state = torch.randn_like(he)
-        for i in range(self.cfg.nce_steps):
-            step_t = torch.full((he.shape[0],), i / self.cfg.nce_steps, device=he.device)
-            state = state + self.velocity(step_t, state, he, he_prob, marker) / self.cfg.nce_steps
+        steps = self.cfg.ode_steps if self.expression_info else self.cfg.nce_steps
+        for i in range(steps):
+            step_t = torch.full((he.shape[0],), i / steps, device=he.device)
+            state = state + self.velocity(step_t, state, he, he_prob, marker) / steps
         nce = patch_nce(self.patch_encoder, he, state)
         return region_loss, flow_loss, nce, state.clamp(-1, 1)
 
@@ -150,7 +178,7 @@ class VelocityPolicy(nn.Module):
 
     def observation(self, h, z, velocity, probability):
         coarse = F.avg_pool2d(torch.cat((h, z, velocity), 1), self.region)
-        return torch.cat((coarse, probability), 1).float()
+        return torch.cat((coarse, probability.expand(-1, -1, *coarse.shape[-2:])), 1).float()
 
     def forward(self, state):
         return self.net(state).float().clamp(-5, 5)

@@ -8,7 +8,7 @@ from torch.distributions import Independent, Normal
 import torch.nn.functional as F
 from torchdiffeq import odeint
 
-from .model import broadcast_grid, he_projection
+from .model import broadcast_grid
 
 
 def window_mean(values, selection, window):
@@ -58,8 +58,7 @@ def corrected_velocity(model, base, action):
 
 
 def sample_rgb(model, h, tissue, marker, noise, policy=None):
-    hmap, _ = he_projection(h, model.cfg)
-    probability = model.probability(hmap / model.cfg.h_scale, tissue, marker)
+    probability = model.he_condition(h, tissue, marker)
     times = grid(model, noise)
     if policy is None:
         return integrate(model, h, probability, marker, noise, times).clamp(-1, 1), probability
@@ -77,27 +76,30 @@ def action_distribution(mean, std):
     return Independent(Normal(mean.float(), std), reinterpreted_batch_ndims=3)
 
 
-@torch.no_grad()
-def unpaired_reward(model, he, generated, marker, indices):
+def unpaired_reward(model, he, generated, marker, indices, label=None):
     """A bounded realism/structure proxy, not a biomarker correctness label."""
-    style = model.critic(generated, marker).sigmoid().flatten(1).mean(1)
+    if model.expression_info is None:
+        endpoint = model.critic(generated, marker).sigmoid().flatten(1).mean(1)
+    else:
+        if label is None:
+            raise ValueError("Expression policy training requires an independent H&E expression label")
+        score = model.expression_scorers["IHC"](generated, marker).sigmoid()
+        endpoint = 1 - (score - label).square()
     source = model.patch_encoder(he).flatten(2).transpose(1, 2)[:, indices]
     output = model.patch_encoder(generated).flatten(2).transpose(1, 2)[:, indices]
-    source = F.normalize(source, dim=-1)
-    output = F.normalize(output, dim=-1)
+    source = F.normalize(source.float(), dim=-1)
+    output = F.normalize(output.float(), dim=-1)
     logits = torch.bmm(output, source.transpose(1, 2)) / 0.07
     labels = torch.arange(len(indices), device=he.device).expand(he.shape[0], -1)
     xent = F.cross_entropy(logits.flatten(0, 1), labels.reshape(-1), reduction="none").reshape(he.shape[0], -1).mean(1)
     structure = torch.exp(-xent / max(1.0, math.log(len(indices))))
-    return (0.5 * style + 0.5 * structure).clamp(0, 1)
+    return (0.5 * endpoint + 0.5 * structure).clamp(0, 1)
 
 
-@torch.no_grad()
-def collect(model, policy, he, marker):
+def collect(model, policy, he, marker, label=None, *, direct=False):
     cfg = model.cfg
-    hmap, tissue = he_projection(he, cfg)
     noise = torch.randn_like(he)
-    probability = model.probability(hmap / cfg.h_scale, tissue, marker)
+    probability = model.he_condition(he, None, marker)
     times = grid(model, noise)
     k = cfg.action_step
     state = integrate(model, he, probability, marker, noise, times[:k + 1])
@@ -105,7 +107,7 @@ def collect(model, policy, he, marker):
     observation = policy.observation(he, state, base, probability)
     mean = policy(observation)
     dist = action_distribution(mean, cfg.action_std)
-    actions = dist.sample((2,))
+    actions = dist.rsample((2,)) if direct else dist.sample((2,))
     log_prob = dist.log_prob(actions)
     dt = times[k + 1] - times[k]
     # Share the same negative locations between both candidate trajectories.
@@ -116,8 +118,33 @@ def collect(model, policy, he, marker):
     for action in actions:
         initial = state + dt * corrected_velocity(model, base, action)
         rgb = integrate(model, he, probability, marker, initial, times[k + 1:]).clamp(-1, 1)
-        rewards.append(unpaired_reward(model, he, rgb, marker, indices))
+        rewards.append(unpaired_reward(model, he, rgb, marker, indices, label))
     return observation, mean, actions, log_prob, torch.stack(rewards)
+
+
+def action_kl(policy, observation, old_mean, cfg):
+    with torch.no_grad():
+        delta = policy(observation).float() - old_mean
+        return (delta.square() / (2 * cfg.action_std ** 2)).flatten(1).sum(1).mean()
+
+
+def direct_policy_update(policy, optimizer, experience, cfg):
+    observation, old_mean, _, _, rewards = experience
+    snapshot = deepcopy(policy.state_dict()), deepcopy(optimizer.state_dict())
+    optimizer.zero_grad(set_to_none=True)
+    loss = -rewards.mean()
+    if not torch.isfinite(loss):
+        raise FloatingPointError("Nonfinite direct policy loss")
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0, error_if_nonfinite=True)
+    optimizer.step()
+    kl = action_kl(policy, observation, old_mean.detach(), cfg)
+    accepted = bool(torch.isfinite(kl) and kl <= cfg.kl_limit)
+    if not accepted:
+        policy.load_state_dict(snapshot[0])
+        optimizer.load_state_dict(snapshot[1])
+    return {"reward": rewards.mean().item(), "spread": (rewards[0] - rewards[1]).abs().mean().item(),
+            "accepted": int(accepted), "policy_loss": loss.item(), "kl": kl.item()}
 
 
 def policy_update(policy, optimizer, experience, cfg, passes=2):
@@ -142,11 +169,7 @@ def policy_update(policy, optimizer, experience, cfg, passes=2):
         loss.backward()
         torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0, error_if_nonfinite=True)
         optimizer.step()
-        with torch.no_grad():
-            new_mean = policy(observation)
-            # Same fixed standard deviation: direct squared distance avoids
-            # float32 cancellation in the generic Normal KL implementation.
-            kl = ((new_mean - old_mean).square() / (2 * cfg.action_std ** 2)).flatten(1).sum(1).mean()
+        kl = action_kl(policy, observation, old_mean, cfg)
         stats["policy_loss"], stats["kl"] = loss.item(), kl.item()
         if not torch.isfinite(kl) or kl > cfg.kl_limit:
             policy.load_state_dict(before[0])

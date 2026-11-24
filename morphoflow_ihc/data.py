@@ -1,6 +1,7 @@
 """Prepare IHC-only training caches and sample native-scale tissue crops."""
 
 import csv
+from hashlib import sha256
 import json
 from pathlib import Path
 from tempfile import NamedTemporaryFile, mkdtemp
@@ -68,9 +69,9 @@ def prepare(manifest: Path, output: Path, cfg: Config) -> int:
             marker = row["marker"].strip().upper()
             cfg.marker_id(marker)
             mpp = float(row.get("mpp") or cfg.pixel_size_um)
-            selected.append((source, marker, mpp))
+            selected.append((source, marker, mpp, (row.get("label") or "").strip()))
 
-    if not selected or len({source for source, _, _ in selected}) != len(selected):
+    if not selected or len({source for source, _, _, _ in selected}) != len(selected):
         raise ValueError("Expected a nonempty IHC training pool with unique image paths")
     missing_markers = set(cfg.markers).difference(entry[1] for entry in selected)
     if missing_markers:
@@ -82,7 +83,7 @@ def prepare(manifest: Path, output: Path, cfg: Config) -> int:
     # A unique cache generation keeps an earlier index valid during preparation.
     payload_dir = Path(mkdtemp(prefix="samples-", dir=output))
     entries = []
-    for index, (source, marker, mpp) in enumerate(selected):
+    for index, (source, marker, mpp, label) in enumerate(selected):
         name = f"{index:06d}.npz"
         with Image.open(source) as raw:
             rgb = raw.convert("RGB")
@@ -91,7 +92,7 @@ def prepare(manifest: Path, output: Path, cfg: Config) -> int:
                 rgb = rgb.resize(size, Image.Resampling.BILINEAR)
             h, d, tissue = decompose(np.asarray(rgb), cfg, "IHC")
         atomic_write(payload_dir / name, lambda f: np.savez(f, h=h, d=d, tissue=tissue, rgb=np.asarray(rgb)))
-        entries.append({"file": f"{payload_dir.name}/{name}", "marker": marker})
+        entries.append({"file": f"{payload_dir.name}/{name}", "marker": marker, "label": label})
     he_entries = []
     for index, (source, mpp) in enumerate(he_selected):
         with Image.open(source) as raw:
@@ -103,13 +104,14 @@ def prepare(manifest: Path, output: Path, cfg: Config) -> int:
         name = f"he-{index:06d}.npz"
         atomic_write(payload_dir / name, lambda f: np.savez(f, rgb=image))
         he_entries.append(f"{payload_dir.name}/{name}")
-    cache = {"format": 2, "settings": cache_settings(cfg), "entries": entries, "he_entries": he_entries}
+    cache = {"format": 2, "settings": cache_settings(cfg), "entries": entries, "he_entries": he_entries,
+             "manifest_digest": sha256(manifest.read_bytes()).hexdigest()}
     atomic_write(output / "index.json", lambda f: f.write(json.dumps(cache).encode()))
     return len(entries)
 
 
 class IHCCrops(Dataset):
-    def __init__(self, path: Path, cfg: Config, prioritize_positive: bool = False):
+    def __init__(self, path: Path, cfg: Config, prioritize_positive: bool = False, expression_manifest=None, expected_digest=None):
         self.root = path
         self.cfg = cfg
         self.prioritize_positive = prioritize_positive
@@ -118,6 +120,18 @@ class IHCCrops(Dataset):
             raise ValueError("Cache stain vectors, markers or pixel spacing differ from this configuration")
         if index.get("format") != 2 or not index.get("he_entries"):
             raise ValueError("RGB PatchNCE requires a format 2 cache including unpaired H&E; rerun prepare")
+        self.expression_pools = None
+        if expression_manifest is not None:
+            from .expression import manifest_digest, read_pools
+
+            digest = manifest_digest(expression_manifest)
+            if index.get("manifest_digest") != digest or expected_digest != digest:
+                raise ValueError("Expression cache, scorers and manifest must use the same split; rerun prepare")
+            pools, _ = read_pools(expression_manifest, cfg)
+            self.expression_pools = {
+                (marker, label): [item for item in pools[("HE", "train", marker)] if item.label == label]
+                for marker in range(len(cfg.markers)) for label in (0.0, 1.0)
+            }
         self.he_entries = index["he_entries"]
         self.entries = index["entries"]
         if not self.entries:
@@ -131,6 +145,17 @@ class IHCCrops(Dataset):
         marker, size = item["marker"], self.cfg.crop
         with np.load(self.root / item["file"], allow_pickle=False) as source:
             h, d, tissue, rgb = (source[key] for key in ("h", "d", "tissue", "rgb"))
+        marker_id = self.cfg.marker_id(marker)
+        if self.expression_pools is not None:
+            from .expression import load_unit, whole_image
+
+            pool = self.expression_pools[(marker_id, float(item["label"]))]
+            item = pool[int(torch.randint(len(pool), (1,)).item())]
+            # Preserve the entire labeled region or slide in both domains.
+            image, _ = whole_image(Image.fromarray(rgb), size)
+            placeholder = torch.zeros(1, size, size)
+            return (placeholder, placeholder, placeholder.bool(), marker_id, image,
+                    load_unit(item, size), item.label)
         height, width = h.shape
         y = int(torch.randint(max(1, height - size + 1), (1,)).item())
         x = int(torch.randint(max(1, width - size + 1), (1,)).item())

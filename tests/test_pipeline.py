@@ -214,3 +214,63 @@ def test_policy_action_can_modify_rgb_channels_independently():
     assert torch.all(output[:, 0] > 1)
     torch.testing.assert_close(output[:, 1:], base[:, 1:])
     assert torch.max(torch.abs(output - base)) <= cfg.velocity_limit + 1e-6
+
+
+def test_weak_expression_pipeline(tmp_path, capsys):
+    """Independent expression labels reach both optimizers at whole-unit scope."""
+    import csv
+    from PIL import Image
+    from morphoflow_ihc.config import read_config
+    from morphoflow_ihc.expression import read_pools
+
+    torch.set_num_threads(2)
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"markers": {"HER2": 0.35}, "crop": 32, "region": 8,
+                                  "context": 16, "overlap": 8, "channel_mult": [1, 1],
+                                  "ode_steps": 2, "action_step": 0, "flow_lr": 0.005}))
+    manifest = tmp_path / "expression.csv"
+    with manifest.open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(("path", "marker", "group", "domain", "split", "label", "label_source",
+                         "expression_scope", "expression_endpoint"))
+        for domain, source in (("HE", "independent_assay"), ("IHC", "ihc_annotation")):
+            for split in ("train", "val"):
+                for label in (0, 1):
+                    stem = f"{domain}-{split}-{label}"
+                    Image.new("RGB", (38, 28), (40 + label * 170, 40, 40)).save(tmp_path / f"{stem}.png")
+                    writer.writerow((f"{stem}.png", "HER2", stem, domain, split, label, source,
+                                     "region", "synthetic color target"))
+    artifact, cache, base = (tmp_path / name for name in ("scorers.pt", "cache", "base.pt"))
+    main(["train-expression", "--manifest", str(manifest), "--config", str(config),
+          "--output", str(artifact), "--device", "cpu", "--epochs", "18"])
+    assert torch.load(artifact, weights_only=True)["passed"]
+    main(["prepare", "--manifest", str(manifest), "--config", str(config), "--output", str(cache)])
+    main(["train", "--cache", str(cache), "--config", str(config), "--output", str(base),
+          "--expression", str(artifact), "--expression-manifest", str(manifest),
+          "--steps", "1", "--batch", "2", "--device", "cpu"])
+    train_records = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+    loss = next(row["expression_loss"] for row in train_records if "expression_loss" in row)
+    assert loss > 0
+    for objective in ("ppo", "direct"):
+        destination = tmp_path / f"{objective}.pt"
+        main(["train-rl", "--cache", str(cache), "--checkpoint", str(base),
+              "--output", str(destination), "--expression-manifest", str(manifest),
+              "--objective", objective, "--groups", "2", "--device", "cpu"])
+        assert torch.load(destination, weights_only=True)["policy_objective"] == objective
+        if objective == "direct":
+            report = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+            assert any(row.get("kl", 0) > 0 for row in report if row.get("objective") == "direct")
+    prediction, maps = tmp_path / "output.png", tmp_path / "output.npz"
+    main(["infer", "--checkpoint", str(tmp_path / "direct.pt"),
+          "--image", str(tmp_path / "HE-val-0.png"), "--marker", "HER2",
+          "--output", str(prediction), "--maps", str(maps), "--expression-scope", "region",
+          "--device", "cpu"])
+    with Image.open(prediction) as image:
+        assert image.size == (38, 28)
+    with np.load(maps) as result:
+        assert result["expression_probability"].shape == ()
+        assert "probability" not in result.files
+    original = manifest.read_text()
+    manifest.write_text(original.replace(",IHC-train-0,IHC,", ",HE-train-0,IHC,"))
+    with pytest.raises(ValueError, match="independent groups"):
+        read_pools(manifest, read_config(config))
