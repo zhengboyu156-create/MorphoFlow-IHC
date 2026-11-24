@@ -1,4 +1,4 @@
-"""Morphology-conditioned region prediction and single-channel flow."""
+"""Unpaired RGB flow, morphology conditioning, and IHC distribution critic."""
 
 import torch
 from torch import nn
@@ -72,6 +72,7 @@ class StainFlow(nn.Module):
             num_classes=len(cfg.markers),
         )
         self.patch_encoder = nn.Sequential(nn.Conv2d(3, 32, 3, padding=1), nn.SiLU(), nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.SiLU(), nn.Conv2d(64, 64, 3, stride=2, padding=1))
+        self.critic = IHCCritic(len(cfg.markers))
         self.matcher = ConditionalFlowMatcher(sigma=0.0)
         self.register_buffer("thresholds", torch.tensor(list(cfg.markers.values())))
 
@@ -99,8 +100,10 @@ class StainFlow(nn.Module):
         t, z, target_velocity = self.matcher.sample_location_and_conditional_flow(
             torch.randn_like(image), image
         )
-        prob = logits.float().sigmoid().detach()
-        prediction = self.velocity(t, z, image, prob, marker)
+        # The target image is deliberately absent from the conditioning channels.
+        # This is an unconditional IHC velocity objective, not a paired HE objective.
+        prob = torch.zeros_like(logits)
+        prediction = self.velocity(t, z, torch.zeros_like(image), prob, marker)
         flow_loss = F.mse_loss(prediction, target_velocity)
         he_h, he_tissue = he_projection(he, self.cfg)
         he_prob = self.probability(he_h / self.cfg.h_scale, he_tissue, marker).detach()
@@ -110,11 +113,29 @@ class StainFlow(nn.Module):
             step_t = torch.full((he.shape[0],), i / self.cfg.nce_steps, device=he.device)
             state = state + self.velocity(step_t, state, he, he_prob, marker) / self.cfg.nce_steps
         nce = patch_nce(self.patch_encoder, he, state)
-        return region_loss, flow_loss, nce
+        return region_loss, flow_loss, nce, state.clamp(-1, 1)
+
+
+class IHCCritic(nn.Module):
+    """Marker-conditioned patch discriminator for unpaired IHC realism."""
+    def __init__(self, markers):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 32, 3, stride=2, padding=1), nn.LeakyReLU(0.2),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.LeakyReLU(0.2),
+            nn.Conv2d(64, 128, 3, stride=2, padding=1), nn.LeakyReLU(0.2),
+        )
+        self.score = nn.Conv2d(128, 1, 1)
+        self.marker = nn.Embedding(markers, 128)
+
+    def forward(self, image, marker):
+        features = self.features(image.float())
+        projection = (features * self.marker(marker)[:,:,None,None]).sum(1, keepdim=True) / (128 ** 0.5)
+        return self.score(features) + projection
 
 
 class VelocityPolicy(nn.Module):
-    """Diagonal Gaussian action on the region grid with bounded velocity effect."""
+    """Diagonal RGB Gaussian actions on the region grid with bounded velocity effect."""
 
     def __init__(self, cfg: Config):
         super().__init__()
@@ -122,7 +143,7 @@ class VelocityPolicy(nn.Module):
         self.net = nn.Sequential(
             nn.Conv2d(10, 24, 3, padding=1), nn.SiLU(),
             nn.Conv2d(24, 24, 3, padding=1), nn.SiLU(),
-            nn.Conv2d(24, 1, 1),
+            nn.Conv2d(24, 3, 1),
         )
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)

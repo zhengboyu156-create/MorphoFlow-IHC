@@ -55,6 +55,7 @@ def test_policy_accepts_small_update_and_rolls_back_large_update():
         experience = observation, mean, actions, actor.log_prob(actions), torch.tensor([[0.9], [0.2]])
     result = policy_update(model, optimizer, experience, cfg, passes=1)
     assert result["accepted"] == 1
+    assert result["kl"] > 0
     assert not torch.equal(mean, model(observation))
     tied = (*experience[:-1], torch.tensor([[0.5000001], [0.5]]))
     assert policy_update(model, optimizer, tied, cfg, passes=1)["accepted"] == 0
@@ -134,7 +135,7 @@ def test_patchnce_reaches_rgb_generator_and_old_checkpoints_rejected(tmp_path):
     tissue = torch.ones_like(h, dtype=torch.bool)
     rgb = torch.rand(1, 3, 32, 32) * 2 - 1
     he = torch.rand(1, 3, 32, 32) * 2 - 1
-    _, _, nce = model.losses(h, dab, tissue, torch.tensor([0]), rgb, he)
+    _, _, nce, _ = model.losses(h, dab, tissue, torch.tensor([0]), rgb, he)
     nce.backward()
     assert torch.isfinite(nce) and nce.item() > 0
     assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.net.parameters())
@@ -154,3 +155,62 @@ def test_rgb_dab_diagnostic_matches_numpy_decomposition():
     x = torch.from_numpy(rgb.copy()).permute(2, 0, 1)[None].float() / 127.5 - 1
     actual = rgb_to_dab(x, cfg)[0, 0].numpy()
     np.testing.assert_allclose(actual, expected, atol=2e-5)
+
+
+def test_flow_target_is_not_passed_as_condition():
+    from morphoflow_ihc.model import StainFlow
+    torch.set_num_threads(2)
+    cfg = Config(markers={'HER2': 0.35}, crop=32, region=8, context=16, overlap=8,
+                 channel_mult=(1, 1), ode_steps=4, action_step=2, nce_weight=0)
+    model = StainFlow(cfg)
+    real_velocity = model.velocity
+    observed = []
+    def traced(t, z, condition, probability, marker):
+        observed.append((condition.detach().clone(), probability.detach().clone()))
+        return real_velocity(t, z, condition, probability, marker)
+    model.velocity = traced
+    rgb = torch.rand(2, 3, 32, 32) * 2 - 1
+    he = torch.rand_like(rgb) * 2 - 1
+    h = torch.rand(2, 1, 32, 32)
+    model.losses(h, h, torch.ones_like(h, dtype=torch.bool), torch.zeros(2, dtype=torch.long), rgb, he)
+    assert len(observed) == cfg.nce_steps + 1
+    assert torch.count_nonzero(observed[0][0]) == 0
+    assert torch.count_nonzero(observed[0][1]) == 0
+    torch.testing.assert_close(observed[1][0], he)
+
+
+def test_unpaired_reward_depends_on_generated_image_and_stays_bounded():
+    from morphoflow_ihc.model import StainFlow
+    from morphoflow_ihc.trajectory import unpaired_reward
+    torch.manual_seed(12)
+    cfg = Config(markers={'HER2': 0.35}, crop=32, region=8, context=16, overlap=8,
+                 channel_mult=(1, 1), ode_steps=4, action_step=2)
+    model = StainFlow(cfg).eval()
+    he = torch.randn(2, 3, 32, 32).clamp(-1, 1)
+    fake = torch.randn_like(he).clamp(-1, 1)
+    idx = torch.arange(16)
+    with torch.no_grad():
+        good = unpaired_reward(model, he, he, torch.zeros(2, dtype=torch.long), idx)
+        other = unpaired_reward(model, he, fake, torch.zeros(2, dtype=torch.long), idx)
+    assert torch.isfinite(good).all() and ((good >= 0) & (good <= 1)).all()
+    assert torch.isfinite(other).all() and not torch.equal(good, other)
+
+
+def test_policy_action_can_modify_rgb_channels_independently():
+    from morphoflow_ihc.trajectory import corrected_velocity
+    cfg = Config(markers={'HER2': 0.35}, crop=32, region=8, context=16, overlap=8,
+                 channel_mult=(1, 1), ode_steps=4, action_step=2)
+    policy = VelocityPolicy(cfg)
+    observation = torch.zeros(1, 10, 4, 4)
+    assert policy(observation).shape == (1, 3, 4, 4)
+    class Dummy:
+        pass
+    model = Dummy()
+    model.cfg = cfg
+    base = torch.ones(1, 3, 32, 32)
+    action = torch.zeros(1, 3, 4, 4)
+    action[:, 0] = 2
+    output = corrected_velocity(model, base, action)
+    assert torch.all(output[:, 0] > 1)
+    torch.testing.assert_close(output[:, 1:], base[:, 1:])
+    assert torch.max(torch.abs(output - base)) <= cfg.velocity_limit + 1e-6

@@ -21,6 +21,9 @@ class Config:
     action_step: int = 4
     nce_steps: int = 2
     nce_weight: float = 0.1
+    adversarial_weight: float = 0.1
+    critic_lr: float = 0.0002
+    advantage_scale: float = 0.01
     tissue_od: float = 0.10
     stain_h: tuple[float, ...] = (0.650, 0.704, 0.286)
     stain_e: tuple[float, ...] = (0.072, 0.990, 0.105)
@@ -52,12 +55,13 @@ class Config:
             raise ValueError("context must span multiple region cells")
         if not 0 <= self.overlap < self.crop:
             raise ValueError("overlap must be smaller than crop")
-        if self.nce_steps < 1 or not math.isfinite(self.nce_weight) or self.nce_weight <= 0:
-            raise ValueError("PatchNCE settings must be positive")
+        if self.nce_steps < 1 or not math.isfinite(self.nce_weight) or self.nce_weight < 0:
+            raise ValueError("PatchNCE steps must be positive and weight nonnegative")
         if not 0 <= self.action_step < self.ode_steps or self.ode_steps < 2:
             raise ValueError("action_step is zero-based and must index the Euler grid")
         positive = (self.pixel_size_um, self.h_scale, self.tissue_od,
                     self.action_std, self.velocity_limit, self.kl_limit, self.flow_lr, self.rl_lr,
+                    self.adversarial_weight, self.critic_lr, self.advantage_scale,
                     *self.markers.values())
         if any(not math.isfinite(value) or value <= 0 for value in positive):
             raise ValueError("Physical and optimization scales must be finite and positive")

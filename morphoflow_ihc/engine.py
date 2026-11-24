@@ -32,11 +32,13 @@ def precision(device):
     return nullcontext()
 
 
-def save_checkpoint(path, model, optimizer, step, stage, policy=None):
+def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_optimizer=None):
     state = {
-        "format": 2, "stage": stage, "step": step, "config": asdict(model.cfg),
+        "format": 3, "stage": stage, "step": step, "config": asdict(model.cfg),
         "model": model.state_dict(), "optimizer": optimizer.state_dict(),
     }
+    if critic_optimizer is not None:
+        state["critic_optimizer"] = critic_optimizer.state_dict()
     if policy is not None:
         state["policy"] = policy.state_dict()
     atomic_write(path, lambda stream: torch.save(state, stream))
@@ -44,13 +46,15 @@ def save_checkpoint(path, model, optimizer, step, stage, policy=None):
 
 def open_checkpoint(path, device):
     state = torch.load(path, map_location=device, weights_only=True)
-    if state.get("format") != 2 or state.get("stage") not in {"flow", "rl"}:
+    if state.get("format") != 3 or state.get("stage") not in {"flow", "rl"}:
         raise ValueError("Unrecognized checkpoint format")
     model = StainFlow(Config(**state["config"])).to(device)
     model.load_state_dict(state["model"])
     policy = None
     if state["stage"] == "rl":
         policy = VelocityPolicy(model.cfg).to(device)
+        if state.get("policy", {}).get("net.4.weight", torch.empty(0)).shape[0] != 3:
+            raise ValueError("Incompatible policy checkpoint: retrain the RGB-channel policy")
         policy.load_state_dict(state["policy"])
     return model, policy, state
 
@@ -69,15 +73,18 @@ def train_flow(args, cfg):
     device = choose_device(args.device)
     torch.manual_seed(args.seed)
     model = StainFlow(cfg).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.flow_lr)
+    optimizer = torch.optim.AdamW((p for name, p in model.named_parameters() if not name.startswith("critic.")), lr=cfg.flow_lr)
+    critic_optimizer = torch.optim.AdamW(model.critic.parameters(), lr=cfg.critic_lr)
     step = 0
     if args.resume:
         model, _, state = open_checkpoint(args.resume, device)
         if state["stage"] != "flow" or model.cfg != cfg:
             raise ValueError("Resume requires a flow checkpoint with the same model configuration")
         step = state["step"]
-        optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.flow_lr)
+        optimizer = torch.optim.AdamW((p for name, p in model.named_parameters() if not name.startswith("critic.")), lr=cfg.flow_lr)
         optimizer.load_state_dict(state["optimizer"])
+        critic_optimizer = torch.optim.AdamW(model.critic.parameters(), lr=cfg.critic_lr)
+        critic_optimizer.load_state_dict(state["critic_optimizer"])
     dataset = IHCCrops(args.cache, cfg)
     loader = make_loader(dataset, args.batch, args.workers, device)
     target = args.steps or args.epochs * len(loader)
@@ -88,21 +95,34 @@ def train_flow(args, cfg):
         h, reference, tissue, marker, image, he = (value.to(device, non_blocking=True) for value in pack)
         optimizer.zero_grad(set_to_none=True)
         with precision(device):
-            region_loss, flow_loss, nce_loss = model.losses(h / cfg.h_scale, reference, tissue, marker, image, he)
-            loss = region_loss + flow_loss + cfg.nce_weight * nce_loss
+            region_loss, flow_loss, nce_loss, fake = model.losses(h / cfg.h_scale, reference, tissue, marker, image, he)
+            critic_optimizer.zero_grad(set_to_none=True)
+            critic_loss = (F.softplus(-model.critic(image, marker)).mean() + F.softplus(model.critic(fake.detach(), marker)).mean()) * 0.5
+        if not torch.isfinite(critic_loss):
+            raise FloatingPointError("Nonfinite critic loss")
+        critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.critic.parameters(), 1.0, error_if_nonfinite=True)
+        critic_optimizer.step()
+        critic_optimizer.zero_grad(set_to_none=True)
+        model.critic.requires_grad_(False)
+        with precision(device):
+            adversarial_loss = F.softplus(-model.critic(fake, marker)).mean()
+            loss = region_loss + flow_loss + cfg.nce_weight * nce_loss + cfg.adversarial_weight * adversarial_loss
         if not torch.isfinite(loss):
             raise FloatingPointError("Nonfinite supervised loss")
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
+        torch.nn.utils.clip_grad_norm_((p for name, p in model.named_parameters() if not name.startswith("critic.")), 1.0, error_if_nonfinite=True)
         optimizer.step()
+        model.critic.requires_grad_(True)
         step += 1
         if step == 1 or step % args.save_every == 0 or step == target:
-            save_checkpoint(args.output, model, optimizer, step, "flow")
+            save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer)
             print(json.dumps({"stage": "flow", "step": step, "region_loss": region_loss.item(),
-                              "flow_loss": flow_loss.item(), "nce_loss": nce_loss.item()}), flush=True)
+                              "flow_loss": flow_loss.item(), "nce_loss": nce_loss.item(),
+                              "critic_loss": critic_loss.item(), "adversarial_loss": adversarial_loss.item()}), flush=True)
         if step >= target or time.monotonic() >= deadline:
             break
-    save_checkpoint(args.output, model, optimizer, step, "flow")
+    save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer)
     print(json.dumps({"stage": "flow", "step": step, "target": target, "file": str(args.output)}))
 
 
@@ -111,6 +131,10 @@ def train_policy(args):
     torch.manual_seed(args.seed)
     model, policy, state = open_checkpoint(args.checkpoint, device)
     cfg = model.cfg
+    if args.advantage_scale is not None:
+        cfg.advantage_scale = args.advantage_scale
+    if args.policy_lr is not None:
+        cfg.rl_lr = args.policy_lr
     model.eval().requires_grad_(False)
     if policy is None:
         policy = VelocityPolicy(cfg).to(device)
@@ -119,7 +143,10 @@ def train_policy(args):
     if state["stage"] == "rl":
         groups = state["step"]
         optimizer.load_state_dict(state["optimizer"])
-    dataset = IHCCrops(args.cache, cfg, prioritize_positive=True)
+        if args.policy_lr is not None:
+            for group in optimizer.param_groups:
+                group["lr"] = cfg.rl_lr
+    dataset = IHCCrops(args.cache, cfg)
     loader = make_loader(dataset, args.batch, args.workers, device)
     next_save = groups + args.save_every
     deadline = time.monotonic() + 3600 * args.hours
@@ -127,9 +154,9 @@ def train_policy(args):
         if groups >= args.groups or time.monotonic() >= deadline:
             break
         limit = args.groups - groups
-        h, reference, tissue, marker, image, _ = (value[:limit].to(device, non_blocking=True) for value in pack)
+        h, reference, tissue, marker, image, he = (value[:limit].to(device, non_blocking=True) for value in pack)
         with precision(device):
-            experience = collect(model, policy, h / cfg.h_scale, reference, tissue, marker, image)
+            experience = collect(model, policy, he, marker)
         stats = policy_update(policy, optimizer, experience, cfg)
         groups += h.shape[0]
         if groups >= next_save or groups == args.groups or groups == h.shape[0]:

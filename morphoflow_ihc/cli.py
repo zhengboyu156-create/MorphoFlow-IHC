@@ -52,6 +52,8 @@ def main(argv=None):
     training_options(policy, 6.0, 1)
     policy.add_argument("--checkpoint", type=Path, required=True)
     policy.add_argument("--groups", type=positive_int, default=3000)
+    policy.add_argument("--advantage-scale", type=duration, help="Explicit PPO advantage normalization scale")
+    policy.add_argument("--policy-lr", type=duration, help="Explicit policy learning rate")
 
     prediction = sub.add_parser("infer", help="Generate native-size IHC from H&E and a marker")
     prediction.add_argument("--checkpoint", type=Path, required=True)
