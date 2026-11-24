@@ -1,0 +1,12 @@
+[submodule "third_party/torchcfm"]
+	path = third_party/torchcfm
+	url = https://github.com/atong01/conditional-flow-matching.git
+[submodule "third_party/flow-grpo"]
+	path = third_party/flow-grpo
+	url = https://github.com/yifan123/flow_grpo.git
+[submodule "third_party/torchdiffeq"]
+	path = third_party/torchdiffeq
+	url = https://github.com/rtqichen/torchdiffeq.git
+[submodule "third_party/branchgrpo"]
+	path = third_party/branchgrpo
+	url = https://github.com/Fredreic1849/BranchGRPO.git

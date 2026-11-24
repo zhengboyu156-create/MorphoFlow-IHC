@@ -1,0 +1,12 @@
+{
+  "markers": {"HER2": 0.35, "KI67": 0.35},
+  "pixel_size_um": 0.4661,
+  "crop": 256,
+  "region": 32,
+  "context": 128,
+  "overlap": 64,
+  "channels": 32,
+  "channel_mult": [1, 2, 2, 4],
+  "ode_steps": 8,
+  "action_step": 4
+}
