@@ -1,23 +1,7 @@
-# 方法与奖励
+# Experimental RGB flow and PatchNCE
 
-## 训练信号
+RGB is normalized to [-1,1]. The base flow regresses Gaussian-noise-to-IHC velocity while conditioned on the **same IHC training crop**. Region prediction is supervised by its own IHC DAB proxy. For an independent H&E crop, a short differentiable Euler rollout generates RGB from noise, conditioned on that H&E and its predicted region probabilities. Same-position features extracted from H&E and the generated image are positives in PatchNCE, other positions within the image are negatives. This is one weighted structure objective in addition to flow and region objectives. `nce_steps` sets the short training rollout, which can differ from `ode_steps` at inference.
 
-训练图来自独立 IHC 图像库。每张 IHC 的光密度估计使用固定染料方向。形态投影在理想线性染料模型中消去 DAB 方向。推理对 H&E 消去伊红方向。染料方向偏差、饱和或复染差异仍可能留下域差异。
+At inference RGB is directly output and overlapping tile RGB predictions are blended. The output is not assembled by compositing a copied H&E hematoxylin channel with DAB. Its optional DAB diagnostic is extracted from the generated RGB after inference.
 
-每个区域先由中心之外的苏木素环形统计预测基础表达，再由中心编码器修正。两个预测共用一个软标签 BCE 目标。参考目标是同张 IHC 中 DAB 高于标志物阈值的组织像素比例。预测软概率上采样后作为 CFM 的条件。
-
-## 速度场
-
-基础流在随机时刻回归目标速度 `DAB - noise`，输入是线性插值中间状态、苏木素形态和预测软概率。标志物用独立的类别嵌入表示。
-
-推理使用固定步数 Euler。RL 阶段冻结基础流和区域分支。两个连续动作从同一状态独立采样。速度残差为两个因子的乘积，分别是基础速度的 RMS 定标上限与插值后的 tanh 动作。推理在同一步使用策略均值。
-
-## 奖励与更新
-
-对每张 IHC 的同坐标终点比较参考和生成 DAB。对于每个有对应参考像素的窗口，分别求高 DAB 命中率和低 DAB 正确留白率，并对窗口等权平均。两类都存在时取这两个分值的调和均值。单类图只用可计算的那项。阳性 DAB 强度相似度以同一阈值归一化误差，作用为 0.8 到 1.0 的乘数。默认的阈值属于图像代理，不对应临床阳性判读。
-
-候选奖励减同组均值后送入裁剪策略目标。忽略小于 FP32 数值容差的同组差异。保存的是原始高斯动作和旧策略联合对数概率。策略更新只对介入点反传。若 KL 超过限额，恢复该次更新前的参数和优化器状态。有界奖励、有限速度残差和 KL 回退降低失稳风险。深度模型仍需实测收敛与迁移效果。
-
-## 输出坐标
-
-H&E 推理保留原始 H 图。DAB 可在统一物理像素尺度生成，融合裁块后回到原始网格。输入的苏木素在同坐标乘正增益，再与 DAB 做一次光密度合成。相同网格和固定单调图像映射分别约束坐标与强度次序。PNG 量化和棕染遮盖会影响结构在最终图上的可见性。
+The trajectory policy operates at a single Euler step on RGB velocity. For training its bounded terminal reward still compares the generated DAB proxy against the DAB in the same IHC conditioning crop. This signal is not a matched H&E biomarker label and cannot establish biomarker prediction for H&E. An H&E–IHC domain gap and an underdetermined unpaired mapping remain. The original DAB model, its caches and checkpoints are incompatible with this version; consult commit 75942f8 for the prior code.

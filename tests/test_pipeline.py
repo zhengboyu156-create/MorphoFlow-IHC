@@ -10,18 +10,8 @@ from morphoflow_ihc.cli import main
 from morphoflow_ihc.config import Config
 from morphoflow_ihc.data import prepare
 from morphoflow_ihc.model import RegionPredictor, VelocityPolicy
-from morphoflow_ihc.stains import decompose, render_od, render_rgb, unit
+from morphoflow_ihc.stains import decompose, unit
 from morphoflow_ihc.trajectory import action_distribution, policy_update, terminal_reward
-
-
-def test_renderer_keeps_the_counterstain():
-    cfg = Config()
-    h = np.array([[0.2, 0.7], [0.5, 0.1]])
-    dab = np.array([[1.2, 0.0], [0.5, 1.4]])
-    h_vector, d_vector = unit(cfg.stain_h), unit(cfg.stain_d)
-    vector = h_vector - (h_vector @ d_vector) * d_vector
-    recovered = render_od(h, dab, cfg) @ vector / (vector @ h_vector)
-    np.testing.assert_allclose(h, recovered)
 
 
 def test_context_branch_excludes_its_center():
@@ -57,7 +47,7 @@ def test_policy_accepts_small_update_and_rolls_back_large_update():
     cfg = Config(rl_lr=1e-4)
     model = VelocityPolicy(cfg)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.rl_lr)
-    observation = torch.rand(1, 4, 2, 2)
+    observation = torch.rand(1, 10, 2, 2)
     with torch.no_grad():
         mean = model(observation)
         actor = action_distribution(mean, cfg.action_std)
@@ -97,7 +87,8 @@ def test_cli_pipeline(tmp_path):
     h = 0.2 + 0.6 * np.exp(-((yy - 20) ** 2 + (xx - 19) ** 2) / 48)
     d = ((yy - 20) ** 2 + (xx - 19) ** 2 < 36).astype(float) * 0.7
     for marker in ("HER2", "KI67"):
-        render_rgb(h, d, cfg).save(tmp_path / f"{marker}.png")
+        rgb_ihc = np.rint(256 * np.exp(-h[..., None] * unit(cfg.stain_h) - d[..., None] * unit(cfg.stain_d)) - 1)
+        Image.fromarray(np.clip(rgb_ihc, 0, 255).astype(np.uint8)).save(tmp_path / f"{marker}.png")
     source = tmp_path / "he.png"
     rgb = np.rint(256 * np.exp(-h[..., None] * unit(cfg.stain_h) - .2 * unit(cfg.stain_e)) - 1)
     Image.fromarray(rgb.astype(np.uint8)).save(source)
@@ -107,6 +98,7 @@ def test_cli_pipeline(tmp_path):
         output.writerow(("path", "marker", "group", "domain", "split"))
         output.writerows((("HER2.png", "HER2", "p1", "IHC", "train"),
                           ("KI67.png", "KI67", "p2", "IHC", "train"),
+                          ("he.png", "", "p4", "HE", "train"),
                           ("unopened.png", "HER2", "p3", "IHC", "test")))
     cache, flow, rl = [str(tmp_path / x) for x in ("cache", "flow.pt", "rl.pt")]
     cfg_path = str(config)
@@ -122,10 +114,43 @@ def test_cli_pipeline(tmp_path):
     assert Image.open(out).size == (41, 39)
     with np.load(maps) as data:
         assert np.isfinite(data["dab"]).all()
-        raw_h, _, _ = decompose(rgb.astype(np.uint8), cfg, "HE")
-        np.testing.assert_allclose(data["h"], raw_h * cfg.counterstain_gain)
+        assert "h" not in data
     main(["evaluate", "--prediction", maps, "--reference", str(tmp_path / "KI67.png"), "--marker",
           "KI67", "--config", cfg_path, "--output", evaluation])
     report = json.loads(open(evaluation).read())
     assert 0 <= report["region_support_fraction_mae"] <= 1
     assert "pixel_support_reward" not in report
+
+
+def test_patchnce_reaches_rgb_generator_and_old_checkpoints_rejected(tmp_path):
+    from morphoflow_ihc.model import StainFlow
+    from morphoflow_ihc.engine import open_checkpoint
+    torch.set_num_threads(2)
+    cfg = Config(markers={"HER2": 0.35}, crop=32, region=8, context=16,
+                 overlap=8, channel_mult=(1, 1), ode_steps=4, action_step=2)
+    model = StainFlow(cfg)
+    h = torch.rand(1, 1, 32, 32)
+    dab = torch.rand(1, 1, 32, 32)
+    tissue = torch.ones_like(h, dtype=torch.bool)
+    rgb = torch.rand(1, 3, 32, 32) * 2 - 1
+    he = torch.rand(1, 3, 32, 32) * 2 - 1
+    _, _, nce = model.losses(h, dab, tissue, torch.tensor([0]), rgb, he)
+    nce.backward()
+    assert torch.isfinite(nce) and nce.item() > 0
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.net.parameters())
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.patch_encoder.parameters())
+    old = tmp_path / 'old.pt'
+    torch.save({'format': 1, 'stage': 'flow'}, old)
+    with pytest.raises(ValueError, match='checkpoint'):
+        open_checkpoint(old, torch.device('cpu'))
+
+
+def test_rgb_dab_diagnostic_matches_numpy_decomposition():
+    from morphoflow_ihc.trajectory import rgb_to_dab
+    cfg = Config()
+    rng = np.random.default_rng(5)
+    rgb = rng.integers(0, 256, size=(17, 19, 3), dtype=np.uint8)
+    _, expected, _ = decompose(rgb, cfg, 'IHC')
+    x = torch.from_numpy(rgb.copy()).permute(2, 0, 1)[None].float() / 127.5 - 1
+    actual = rgb_to_dab(x, cfg)[0, 0].numpy()
+    np.testing.assert_allclose(actual, expected, atol=2e-5)

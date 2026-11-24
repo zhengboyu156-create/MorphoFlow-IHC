@@ -15,8 +15,8 @@ from torch.utils.data import DataLoader
 from .config import Config
 from .data import IHCCrops, atomic_write
 from .model import StainFlow, VelocityPolicy, broadcast_grid
-from .stains import canonical_size, decompose, render_rgb, resize_map
-from .trajectory import collect, policy_update, sample_dab, terminal_reward
+from .stains import canonical_size, decompose
+from .trajectory import collect, policy_update, sample_rgb, terminal_reward
 
 
 def choose_device(name):
@@ -34,7 +34,7 @@ def precision(device):
 
 def save_checkpoint(path, model, optimizer, step, stage, policy=None):
     state = {
-        "format": 1, "stage": stage, "step": step, "config": asdict(model.cfg),
+        "format": 2, "stage": stage, "step": step, "config": asdict(model.cfg),
         "model": model.state_dict(), "optimizer": optimizer.state_dict(),
     }
     if policy is not None:
@@ -44,7 +44,7 @@ def save_checkpoint(path, model, optimizer, step, stage, policy=None):
 
 def open_checkpoint(path, device):
     state = torch.load(path, map_location=device, weights_only=True)
-    if state.get("format") != 1 or state.get("stage") not in {"flow", "rl"}:
+    if state.get("format") != 2 or state.get("stage") not in {"flow", "rl"}:
         raise ValueError("Unrecognized checkpoint format")
     model = StainFlow(Config(**state["config"])).to(device)
     model.load_state_dict(state["model"])
@@ -85,11 +85,11 @@ def train_flow(args, cfg):
     for pack in batches(loader):
         if step >= target or time.monotonic() >= deadline:
             break
-        h, reference, tissue, marker = (value.to(device, non_blocking=True) for value in pack)
+        h, reference, tissue, marker, image, he = (value.to(device, non_blocking=True) for value in pack)
         optimizer.zero_grad(set_to_none=True)
         with precision(device):
-            region_loss, flow_loss = model.losses(h / cfg.h_scale, reference, tissue, marker)
-            loss = region_loss + flow_loss
+            region_loss, flow_loss, nce_loss = model.losses(h / cfg.h_scale, reference, tissue, marker, image, he)
+            loss = region_loss + flow_loss + cfg.nce_weight * nce_loss
         if not torch.isfinite(loss):
             raise FloatingPointError("Nonfinite supervised loss")
         loss.backward()
@@ -99,7 +99,7 @@ def train_flow(args, cfg):
         if step == 1 or step % args.save_every == 0 or step == target:
             save_checkpoint(args.output, model, optimizer, step, "flow")
             print(json.dumps({"stage": "flow", "step": step, "region_loss": region_loss.item(),
-                              "flow_loss": flow_loss.item()}), flush=True)
+                              "flow_loss": flow_loss.item(), "nce_loss": nce_loss.item()}), flush=True)
         if step >= target or time.monotonic() >= deadline:
             break
     save_checkpoint(args.output, model, optimizer, step, "flow")
@@ -127,9 +127,9 @@ def train_policy(args):
         if groups >= args.groups or time.monotonic() >= deadline:
             break
         limit = args.groups - groups
-        h, reference, tissue, marker = (value[:limit].to(device, non_blocking=True) for value in pack)
+        h, reference, tissue, marker, image, _ = (value[:limit].to(device, non_blocking=True) for value in pack)
         with precision(device):
-            experience = collect(model, policy, h / cfg.h_scale, reference, tissue, marker)
+            experience = collect(model, policy, h / cfg.h_scale, reference, tissue, marker, image)
         stats = policy_update(policy, optimizer, experience, cfg)
         groups += h.shape[0]
         if groups >= next_save or groups == args.groups or groups == h.shape[0]:
@@ -161,47 +161,43 @@ def infer(args):
     marker = torch.tensor([cfg.marker_id(args.marker)], device=device)
     with Image.open(args.image) as raw:
         source = raw.convert("RGB")
-    native_h, _, native_tissue = decompose(np.asarray(source), cfg, "HE")
-    size = canonical_size(source.size, args.mpp if args.mpp is not None else cfg.pixel_size_um, cfg)
-    scaled_h = resize_map(native_h, size)
-    scaled_tissue = resize_map(native_tissue.astype(np.float32), size) >= 0.5
-    height, width = scaled_h.shape
+    native_size = source.size
+    size = canonical_size(native_size, args.mpp if args.mpp is not None else cfg.pixel_size_um, cfg)
+    scaled = source.resize(size, Image.Resampling.BILINEAR) if size != native_size else source
+    rgb = np.asarray(scaled)
+    _, _, valid = decompose(rgb, cfg, "HE")
+    height, width = valid.shape
     tile = cfg.crop
     padded_shape = max(height, tile), max(width, tile)
-    pad = ((0, padded_shape[0] - height), (0, padded_shape[1] - width))
-    h = torch.from_numpy(np.pad(scaled_h / cfg.h_scale, pad))
-    tissue = torch.from_numpy(np.pad(scaled_tissue, pad))
-    noise_gen = torch.Generator().manual_seed(args.seed)
-    noise = torch.randn(padded_shape, generator=noise_gen)
-    dab_total = torch.zeros(padded_shape)
-    prob_total = torch.zeros_like(dab_total)
-    weight_total = torch.zeros_like(dab_total)
+    image = np.pad(rgb, ((0,padded_shape[0]-height),(0,padded_shape[1]-width),(0,0)), constant_values=255)
+    image = torch.from_numpy(image.copy()).permute(2,0,1).float() / 127.5 - 1
+    tissue = torch.from_numpy(np.pad(valid, ((0,padded_shape[0]-height),(0,padded_shape[1]-width))))
+    noise = torch.randn((3,*padded_shape), generator=torch.Generator().manual_seed(args.seed))
+    total = torch.zeros((3,*padded_shape))
+    prob_total = torch.zeros(padded_shape)
+    weight_total = torch.zeros(padded_shape)
     taper = torch.hann_window(tile, periodic=False).clamp_min(0.05)
-    blend = taper[:, None] * taper[None, :]
-    stride = tile - cfg.overlap
-    for y in offsets(height, tile, stride):
-        for x in offsets(width, tile, stride):
-            region = (slice(y, y + tile), slice(x, x + tile))
-            h_tile, tissue_tile, noise_tile = (a[region][None, None].to(device) for a in (h, tissue, noise))
+    blend = taper[:,None] * taper[None,:]
+    for y in offsets(height, tile, tile-cfg.overlap):
+        for x in offsets(width, tile, tile-cfg.overlap):
+            region = (slice(y,y+tile),slice(x,x+tile))
+            image_tile = image[:,region[0],region[1]][None].to(device)
+            tissue_tile = tissue[region][None,None].to(device)
+            noise_tile = noise[:,region[0],region[1]][None].to(device)
             with precision(device):
-                estimate, probability = sample_dab(model, h_tile, tissue_tile, marker, noise_tile, policy)
-            dab_total[region] += estimate.float().cpu()[0, 0] * blend
-            prob_total[region] += broadcast_grid(probability, h_tile).float().cpu()[0, 0] * blend
+                estimate, probability = sample_rgb(model, image_tile, tissue_tile, marker, noise_tile, policy)
+            total[:,region[0],region[1]] += estimate.float().cpu()[0] * blend
+            prob_total[region] += broadcast_grid(probability, image_tile).float().cpu()[0,0] * blend
             weight_total[region] += blend
-    dab = resize_map((dab_total / weight_total)[:height, :width].numpy(), source.size)
-    probability = resize_map((prob_total / weight_total)[:height, :width].numpy(), source.size)
-    if not np.isfinite(dab).all():
-        raise FloatingPointError("Inference produced nonfinite DAB")
-    corrected_h = cfg.counterstain_gain * native_h
-    rendered = render_rgb(corrected_h, dab, cfg)
-    # PNG makes the supplied coordinate grid and rendered RGB reproducible.
+    result = (total / weight_total)[:,:height,:width].permute(1,2,0).clamp(-1,1).numpy()
+    rendered = Image.fromarray(np.rint((result + 1)*127.5).astype(np.uint8)).resize(native_size, Image.Resampling.BILINEAR)
     atomic_write(args.output, lambda stream: rendered.save(stream, format="PNG"))
     if args.maps:
-        atomic_write(args.maps, lambda stream: np.savez_compressed(
-            stream, h=corrected_h, dab=dab, probability=probability
-        ))
-    print(json.dumps({"marker": args.marker.upper(), "width": source.width, "height": source.height,
-                      "rl": policy is not None, "file": str(args.output)}))
+        _, dab, _ = decompose(np.asarray(rendered), cfg, "IHC")
+        probability = Image.fromarray((prob_total / weight_total)[:height,:width].numpy()).resize(native_size, Image.Resampling.BILINEAR)
+        atomic_write(args.maps, lambda stream: np.savez_compressed(stream, dab=dab, probability=np.asarray(probability)))
+    print(json.dumps({"marker":args.marker.upper(), "width":source.width, "height":source.height,
+                      "rl":policy is not None, "file":str(args.output)}))
 
 
 def evaluate(args, cfg):

@@ -46,17 +46,6 @@ def decompose(rgb: np.ndarray, cfg: Config, domain: str):
     return hematoxylin, concentrations[..., 1].astype(np.float32), tissue
 
 
-def render_od(hematoxylin: np.ndarray, dab: np.ndarray, cfg: Config) -> np.ndarray:
-    if hematoxylin.shape != dab.shape:
-        raise ValueError("H and DAB must have the same native pixel grid")
-    return hematoxylin[..., None] * unit(cfg.stain_h) + dab[..., None] * unit(cfg.stain_d)
-
-
-def render_rgb(hematoxylin: np.ndarray, dab: np.ndarray, cfg: Config) -> Image.Image:
-    od = render_od(hematoxylin, dab, cfg)
-    return Image.fromarray(np.rint(np.clip(256 * np.exp(-od) - 1, 0, 255)).astype(np.uint8))
-
-
 def canonical_size(size: tuple[int, int], source_mpp: float, cfg: Config) -> tuple[int, int]:
     if not math.isfinite(source_mpp) or source_mpp <= 0:
         raise ValueError("Pixel spacing must be finite and positive")

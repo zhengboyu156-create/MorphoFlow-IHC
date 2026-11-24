@@ -63,14 +63,15 @@ class StainFlow(nn.Module):
         self.region = RegionPredictor(cfg)
         self.net = UNetModel(
             image_size=cfg.crop,
-            in_channels=3,
-            out_channels=1,
+            in_channels=7,
+            out_channels=3,
             model_channels=cfg.channels,
             channel_mult=cfg.channel_mult,
             num_res_blocks=cfg.residual_blocks,
             attention_resolutions=(),
             num_classes=len(cfg.markers),
         )
+        self.patch_encoder = nn.Sequential(nn.Conv2d(3, 32, 3, padding=1), nn.SiLU(), nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.SiLU(), nn.Conv2d(64, 64, 3, stride=2, padding=1))
         self.matcher = ConditionalFlowMatcher(sigma=0.0)
         self.register_buffer("thresholds", torch.tensor(list(cfg.markers.values())))
 
@@ -78,11 +79,11 @@ class StainFlow(nn.Module):
         _, logits = self.region(h, tissue, marker)
         return logits.float().sigmoid()
 
-    def velocity(self, t, z, h, probability, marker):
-        features = torch.cat((z, h, broadcast_grid(probability, h)), 1)
+    def velocity(self, t, z, image, probability, marker):
+        features = torch.cat((z, image, broadcast_grid(probability, image)), 1)
         return self.net(t, features, y=marker).float()
 
-    def losses(self, h, reference, tissue, marker):
+    def losses(self, h, reference, tissue, marker, image, he):
         base, logits = self.region(h, tissue, marker)
         tau = self.thresholds[marker, None, None, None]
         valid = tissue.float()
@@ -96,12 +97,20 @@ class StainFlow(nn.Module):
         regions = (occupancy > 0).float()
         region_loss = (bce * weights * regions).sum() / regions.sum().clamp_min(1)
         t, z, target_velocity = self.matcher.sample_location_and_conditional_flow(
-            torch.randn_like(reference), reference
+            torch.randn_like(image), image
         )
         prob = logits.float().sigmoid().detach()
-        prediction = self.velocity(t, z, h, prob, marker)
+        prediction = self.velocity(t, z, image, prob, marker)
         flow_loss = F.mse_loss(prediction, target_velocity)
-        return region_loss, flow_loss
+        he_h, he_tissue = he_projection(he, self.cfg)
+        he_prob = self.probability(he_h / self.cfg.h_scale, he_tissue, marker).detach()
+        # Unroll from noise to an endpoint conditioned on an independent HE crop.
+        state = torch.randn_like(he)
+        for i in range(self.cfg.nce_steps):
+            step_t = torch.full((he.shape[0],), i / self.cfg.nce_steps, device=he.device)
+            state = state + self.velocity(step_t, state, he, he_prob, marker) / self.cfg.nce_steps
+        nce = patch_nce(self.patch_encoder, he, state)
+        return region_loss, flow_loss, nce
 
 
 class VelocityPolicy(nn.Module):
@@ -111,7 +120,7 @@ class VelocityPolicy(nn.Module):
         super().__init__()
         self.region = cfg.region
         self.net = nn.Sequential(
-            nn.Conv2d(4, 24, 3, padding=1), nn.SiLU(),
+            nn.Conv2d(10, 24, 3, padding=1), nn.SiLU(),
             nn.Conv2d(24, 24, 3, padding=1), nn.SiLU(),
             nn.Conv2d(24, 1, 1),
         )
@@ -124,3 +133,26 @@ class VelocityPolicy(nn.Module):
 
     def forward(self, state):
         return self.net(state).float().clamp(-5, 5)
+
+
+def he_projection(image, cfg):
+    rgb = ((image.float() + 1) / 2).clamp(0, 1)
+    od = -torch.log((rgb * 255 + 1) / 256)
+    h = F.normalize(od.new_tensor(cfg.stain_h), dim=0)
+    e = F.normalize(od.new_tensor(cfg.stain_e), dim=0)
+    vector = h - (h @ e) * e
+    hmap = (od * vector[None,:,None,None]).sum(1, keepdim=True) / (vector @ h)
+    return hmap.clamp_min(0), od.amax(1, keepdim=True) >= cfg.tissue_od
+
+
+def patch_nce(encoder, source, generated, patches=64, temperature=0.07):
+    a = encoder(source).flatten(2).transpose(1, 2)
+    b = encoder(generated).flatten(2).transpose(1, 2)
+    count = min(patches, a.shape[1])
+    indices = torch.randperm(a.shape[1], device=a.device)[:count]
+    # Same indices are positives; negatives come from other locations of the same image.
+    a = F.normalize(a[:, indices], dim=-1)
+    b = F.normalize(b[:, indices], dim=-1)
+    logits = torch.bmm(b, a.transpose(1, 2)) / temperature
+    target = torch.arange(count, device=a.device).expand(a.shape[0], -1)
+    return F.cross_entropy(logits.reshape(-1, count), target.reshape(-1))

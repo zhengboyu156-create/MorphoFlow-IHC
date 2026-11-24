@@ -7,7 +7,7 @@ from torch.distributions import Independent, Normal, kl_divergence
 import torch.nn.functional as F
 from torchdiffeq import odeint
 
-from .model import broadcast_grid
+from .model import broadcast_grid, he_projection
 
 
 def window_mean(values, selection, window):
@@ -56,11 +56,12 @@ def corrected_velocity(model, base, action):
     return base + residual
 
 
-def sample_dab(model, h, tissue, marker, noise, policy=None):
-    probability = model.probability(h, tissue, marker)
+def sample_rgb(model, h, tissue, marker, noise, policy=None):
+    hmap, _ = he_projection(h, model.cfg)
+    probability = model.probability(hmap / model.cfg.h_scale, tissue, marker)
     times = grid(model, noise)
     if policy is None:
-        return integrate(model, h, probability, marker, noise, times).clamp_min(0), probability
+        return integrate(model, h, probability, marker, noise, times).clamp(-1, 1), probability
     k = model.cfg.action_step
     state = integrate(model, h, probability, marker, noise, times[:k + 1])
     base = model.velocity(times[k], state, h, probability, marker)
@@ -68,7 +69,7 @@ def sample_dab(model, h, tissue, marker, noise, policy=None):
     action = policy(observation)
     initial = state + (times[k + 1] - times[k]) * corrected_velocity(model, base, action)
     result = integrate(model, h, probability, marker, initial, times[k + 1:])
-    return result.clamp_min(0), probability
+    return result.clamp(-1, 1), probability
 
 
 def action_distribution(mean, std):
@@ -76,10 +77,10 @@ def action_distribution(mean, std):
 
 
 @torch.no_grad()
-def collect(model, policy, h, reference, tissue, marker):
+def collect(model, policy, hmap, reference, tissue, marker, h):
     cfg = model.cfg
-    noise = torch.randn_like(reference)
-    probability = model.probability(h, tissue, marker)
+    noise = torch.randn_like(h)
+    probability = model.probability(hmap, tissue, marker)
     times = grid(model, noise)
     k = cfg.action_step
     state = integrate(model, h, probability, marker, noise, times[:k + 1])
@@ -95,7 +96,8 @@ def collect(model, policy, h, reference, tissue, marker):
     # Sequential branches minimize peak memory and share the entire prefix.
     for action in actions:
         initial = state + dt * corrected_velocity(model, base, action)
-        dab = integrate(model, h, probability, marker, initial, times[k + 1:]).clamp_min(0)
+        rgb = integrate(model, h, probability, marker, initial, times[k + 1:]).clamp(-1, 1)
+        dab = rgb_to_dab(rgb, cfg)
         rewards.append(terminal_reward(dab, reference, tissue, tau, cfg.region, cfg.intensity_weight))
     return observation, mean, actions, log_prob, torch.stack(rewards)
 
@@ -131,3 +133,17 @@ def policy_update(policy, optimizer, experience, cfg, passes=2):
             break
         stats["accepted"] += 1
     return stats
+
+
+def rgb_to_dab(image, cfg):
+    rgb = ((image.float()+1)/2).clamp(0, 1)
+    od = -torch.log((rgb * 255 + 1) / 256)
+    h = F.normalize(od.new_tensor(cfg.stain_h), dim=0)
+    d = F.normalize(od.new_tensor(cfg.stain_d), dim=0)
+    vectors = torch.stack((h, d), dim=1)
+    concentrations = torch.einsum("ij,bjhw->bihw", torch.linalg.pinv(vectors), od)
+    boundary = (concentrations < 0).any(1, keepdim=True)
+    candidates = torch.einsum("ji,bjhw->bihw", vectors, od).clamp_min(0)
+    edge = candidates.argmax(1, keepdim=True)
+    edge_dab = torch.where(edge == 1, candidates[:, 1:2], 0.0)
+    return torch.where(boundary, edge_dab, concentrations[:, 1:2])
