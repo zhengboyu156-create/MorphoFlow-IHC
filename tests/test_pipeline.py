@@ -9,23 +9,9 @@ import torch
 from morphoflow_ihc.cli import main
 from morphoflow_ihc.config import Config
 from morphoflow_ihc.data import prepare
-from morphoflow_ihc.model import RegionPredictor, VelocityPolicy
+from morphoflow_ihc.model import VelocityPolicy
 from morphoflow_ihc.stains import decompose, unit
 from morphoflow_ihc.trajectory import action_distribution, policy_update, terminal_reward
-
-
-def test_context_branch_excludes_its_center():
-    cfg = Config(crop=32, region=8, context=16, overlap=8)
-    torch.manual_seed(99)
-    model = RegionPredictor(cfg)
-    image = torch.rand(1, 1, 32, 32)
-    modified = image.clone()
-    modified[:, :, 8:16, 8:16] = 1.5
-    tissue = torch.ones_like(image, dtype=torch.bool)
-    seed = torch.tensor([0])
-    a, _ = model(image, tissue, seed)
-    b, _ = model(modified, tissue, seed)
-    torch.testing.assert_close(a[:, :, 1, 1], b[:, :, 1, 1], atol=2e-6, rtol=0)
 
 
 def test_reward_rejects_uniform_typing_and_respects_absent_classes():
@@ -47,7 +33,7 @@ def test_policy_accepts_small_update_and_rolls_back_large_update():
     cfg = Config(rl_lr=1e-4)
     model = VelocityPolicy(cfg)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.rl_lr)
-    observation = torch.rand(1, 10, 2, 2)
+    observation = torch.rand(1, 9, 2, 2)
     with torch.no_grad():
         mean = model(observation)
         actor = action_distribution(mean, cfg.action_std)
@@ -109,13 +95,17 @@ def test_cli_pipeline(tmp_path):
     main(base + ["--steps", "2", "--resume", flow])
     main(["train-rl", "--cache", cache, "--checkpoint", flow, "--output", rl, "--groups", "2", "--device", "cpu"])
     assert torch.load(rl, weights_only=True)["step"] == 2
+    direct = tmp_path / "direct.pt"
+    main(["train-rl", "--cache", cache, "--checkpoint", flow, "--output", str(direct),
+          "--objective", "direct", "--groups", "2", "--device", "cpu"])
+    assert torch.load(direct, weights_only=True)["policy_objective"] == "direct"
     out, maps, evaluation = [str(tmp_path / x) for x in ("virtual.png", "maps.npz", "score.json")]
     main(["infer", "--checkpoint", rl, "--image", str(source), "--marker", "KI67", "--output", out,
           "--maps", maps, "--device", "cpu"])
     assert Image.open(out).size == (41, 39)
     with np.load(maps) as data:
         assert np.isfinite(data["dab"]).all()
-        assert "h" not in data
+        assert data.files == ["dab"]
     main(["evaluate", "--prediction", maps, "--reference", str(tmp_path / "KI67.png"), "--marker",
           "KI67", "--config", cfg_path, "--output", evaluation])
     report = json.loads(open(evaluation).read())
@@ -130,12 +120,9 @@ def test_patchnce_reaches_rgb_generator_and_old_checkpoints_rejected(tmp_path):
     cfg = Config(markers={"HER2": 0.35}, crop=32, region=8, context=16,
                  overlap=8, channel_mult=(1, 1), ode_steps=4, action_step=2)
     model = StainFlow(cfg)
-    h = torch.rand(1, 1, 32, 32)
-    dab = torch.rand(1, 1, 32, 32)
-    tissue = torch.ones_like(h, dtype=torch.bool)
     rgb = torch.rand(1, 3, 32, 32) * 2 - 1
     he = torch.rand(1, 3, 32, 32) * 2 - 1
-    _, _, nce, _ = model.losses(h, dab, tissue, torch.tensor([0]), rgb, he)
+    _, nce, _ = model.losses(rgb, he, torch.tensor([0]))
     nce.backward()
     assert torch.isfinite(nce) and nce.item() > 0
     assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.net.parameters())
@@ -165,18 +152,17 @@ def test_flow_target_is_not_passed_as_condition():
     model = StainFlow(cfg)
     real_velocity = model.velocity
     observed = []
-    def traced(t, z, condition, probability, marker):
-        observed.append((condition.detach().clone(), probability.detach().clone()))
-        return real_velocity(t, z, condition, probability, marker)
+    def traced(t, z, condition, marker):
+        observed.append(condition.detach().clone())
+        return real_velocity(t, z, condition, marker)
     model.velocity = traced
     rgb = torch.rand(2, 3, 32, 32) * 2 - 1
     he = torch.rand_like(rgb) * 2 - 1
-    h = torch.rand(2, 1, 32, 32)
-    model.losses(h, h, torch.ones_like(h, dtype=torch.bool), torch.zeros(2, dtype=torch.long), rgb, he)
-    assert len(observed) == cfg.nce_steps + 1
-    assert torch.count_nonzero(observed[0][0]) == 0
-    assert torch.count_nonzero(observed[0][1]) == 0
-    torch.testing.assert_close(observed[1][0], he)
+    model.losses(rgb, he, torch.zeros(2, dtype=torch.long))
+    assert len(observed) == cfg.ode_steps + 1
+    assert torch.count_nonzero(observed[0]) == 0
+    for condition in observed[1:]:
+        torch.testing.assert_close(condition, he)
 
 
 def test_unpaired_reward_depends_on_generated_image_and_stays_bounded():
@@ -201,7 +187,7 @@ def test_policy_action_can_modify_rgb_channels_independently():
     cfg = Config(markers={'HER2': 0.35}, crop=32, region=8, context=16, overlap=8,
                  channel_mult=(1, 1), ode_steps=4, action_step=2)
     policy = VelocityPolicy(cfg)
-    observation = torch.zeros(1, 10, 4, 4)
+    observation = torch.zeros(1, 9, 4, 4)
     assert policy(observation).shape == (1, 3, 4, 4)
     class Dummy:
         pass
@@ -214,63 +200,3 @@ def test_policy_action_can_modify_rgb_channels_independently():
     assert torch.all(output[:, 0] > 1)
     torch.testing.assert_close(output[:, 1:], base[:, 1:])
     assert torch.max(torch.abs(output - base)) <= cfg.velocity_limit + 1e-6
-
-
-def test_weak_expression_pipeline(tmp_path, capsys):
-    """Independent expression labels reach both optimizers at whole-unit scope."""
-    import csv
-    from PIL import Image
-    from morphoflow_ihc.config import read_config
-    from morphoflow_ihc.expression import read_pools
-
-    torch.set_num_threads(2)
-    config = tmp_path / "config.json"
-    config.write_text(json.dumps({"markers": {"HER2": 0.35}, "crop": 32, "region": 8,
-                                  "context": 16, "overlap": 8, "channel_mult": [1, 1],
-                                  "ode_steps": 2, "action_step": 0, "flow_lr": 0.005}))
-    manifest = tmp_path / "expression.csv"
-    with manifest.open("w", newline="") as stream:
-        writer = csv.writer(stream)
-        writer.writerow(("path", "marker", "group", "domain", "split", "label", "label_source",
-                         "expression_scope", "expression_endpoint"))
-        for domain, source in (("HE", "independent_assay"), ("IHC", "ihc_annotation")):
-            for split in ("train", "val"):
-                for label in (0, 1):
-                    stem = f"{domain}-{split}-{label}"
-                    Image.new("RGB", (38, 28), (40 + label * 170, 40, 40)).save(tmp_path / f"{stem}.png")
-                    writer.writerow((f"{stem}.png", "HER2", stem, domain, split, label, source,
-                                     "region", "synthetic color target"))
-    artifact, cache, base = (tmp_path / name for name in ("scorers.pt", "cache", "base.pt"))
-    main(["train-expression", "--manifest", str(manifest), "--config", str(config),
-          "--output", str(artifact), "--device", "cpu", "--epochs", "18"])
-    assert torch.load(artifact, weights_only=True)["passed"]
-    main(["prepare", "--manifest", str(manifest), "--config", str(config), "--output", str(cache)])
-    main(["train", "--cache", str(cache), "--config", str(config), "--output", str(base),
-          "--expression", str(artifact), "--expression-manifest", str(manifest),
-          "--steps", "1", "--batch", "2", "--device", "cpu"])
-    train_records = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
-    loss = next(row["expression_loss"] for row in train_records if "expression_loss" in row)
-    assert loss > 0
-    for objective in ("ppo", "direct"):
-        destination = tmp_path / f"{objective}.pt"
-        main(["train-rl", "--cache", str(cache), "--checkpoint", str(base),
-              "--output", str(destination), "--expression-manifest", str(manifest),
-              "--objective", objective, "--groups", "2", "--device", "cpu"])
-        assert torch.load(destination, weights_only=True)["policy_objective"] == objective
-        if objective == "direct":
-            report = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
-            assert any(row.get("kl", 0) > 0 for row in report if row.get("objective") == "direct")
-    prediction, maps = tmp_path / "output.png", tmp_path / "output.npz"
-    main(["infer", "--checkpoint", str(tmp_path / "direct.pt"),
-          "--image", str(tmp_path / "HE-val-0.png"), "--marker", "HER2",
-          "--output", str(prediction), "--maps", str(maps), "--expression-scope", "region",
-          "--device", "cpu"])
-    with Image.open(prediction) as image:
-        assert image.size == (38, 28)
-    with np.load(maps) as result:
-        assert result["expression_probability"].shape == ()
-        assert "probability" not in result.files
-    original = manifest.read_text()
-    manifest.write_text(original.replace(",IHC-train-0,IHC,", ",HE-train-0,IHC,"))
-    with pytest.raises(ValueError, match="independent groups"):
-        read_pools(manifest, read_config(config))

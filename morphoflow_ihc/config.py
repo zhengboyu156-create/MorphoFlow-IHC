@@ -21,7 +21,6 @@ class Config:
     action_step: int = 4
     nce_steps: int = 2
     nce_weight: float = 0.1
-    expression_weight: float = 0.1
     adversarial_weight: float = 0.1
     critic_lr: float = 0.0002
     advantage_scale: float = 0.01
@@ -58,8 +57,6 @@ class Config:
             raise ValueError("overlap must be smaller than crop")
         if self.nce_steps < 1 or not math.isfinite(self.nce_weight) or self.nce_weight < 0:
             raise ValueError("PatchNCE steps must be positive and weight nonnegative")
-        if not math.isfinite(self.expression_weight) or self.expression_weight < 0:
-            raise ValueError("Expression weight must be finite and nonnegative")
         if not 0 <= self.action_step < self.ode_steps or self.ode_steps < 2:
             raise ValueError("action_step is zero-based and must index the Euler grid")
         positive = (self.pixel_size_um, self.h_scale, self.tissue_od,

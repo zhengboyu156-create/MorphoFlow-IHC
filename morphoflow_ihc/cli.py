@@ -41,28 +41,16 @@ def main(argv=None):
     preparation.add_argument("--config", type=Path, required=True)
     preparation.add_argument("--output", type=Path, required=True)
 
-    expression = sub.add_parser("train-expression", help="Fit and validate separate whole-unit expression scorers")
-    expression.add_argument("--manifest", type=Path, required=True)
-    expression.add_argument("--config", type=Path, required=True)
-    expression.add_argument("--output", type=Path, required=True)
-    expression.add_argument("--epochs", type=positive_int, default=25)
-    expression.add_argument("--batch", type=positive_int, default=8)
-    expression.add_argument("--device", default="auto")
-    expression.add_argument("--seed", type=int, default=1234)
-
-    flow = sub.add_parser("train", help="Train region, RGB flow, and PatchNCE objectives")
+    flow = sub.add_parser("train", help="Train label-free RGB flow and PatchNCE objectives")
     training_options(flow, 20.0, 4)
     flow.add_argument("--config", type=Path, required=True)
     flow.add_argument("--epochs", type=positive_int, default=25)
     flow.add_argument("--steps", type=positive_int)
     flow.add_argument("--resume", type=Path)
-    flow.add_argument("--expression", type=Path, help="Validated expression scorer artifact")
-    flow.add_argument("--expression-manifest", type=Path)
 
     policy = sub.add_parser("train-rl", help="Optimize the bounded velocity policy at one time step")
     training_options(policy, 6.0, 1)
     policy.add_argument("--checkpoint", type=Path, required=True)
-    policy.add_argument("--expression-manifest", type=Path)
     policy.add_argument("--objective", choices=("ppo", "direct"), default="ppo")
     policy.add_argument("--groups", type=positive_int, default=3000)
     policy.add_argument("--advantage-scale", type=duration, help="Explicit PPO advantage normalization scale")
@@ -75,7 +63,6 @@ def main(argv=None):
     prediction.add_argument("--output", type=Path, required=True)
     prediction.add_argument("--maps", type=Path)
     prediction.add_argument("--mpp", type=float)
-    prediction.add_argument("--expression-scope", choices=("slide", "region"))
     prediction.add_argument("--device", default="auto")
     prediction.add_argument("--seed", type=int, default=1234)
 
@@ -100,9 +87,6 @@ def main(argv=None):
             from .data import prepare
             count = prepare(args.manifest, args.output, read_config(args.config))
             print(f"Prepared {count} training IHC images and an H&E pool in {args.output}")
-        elif args.command == "train-expression":
-            from .expression import fit_expression
-            fit_expression(args)
         else:
             from . import engine
             if args.command == "train":

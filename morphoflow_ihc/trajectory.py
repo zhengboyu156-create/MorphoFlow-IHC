@@ -8,7 +8,6 @@ from torch.distributions import Independent, Normal
 import torch.nn.functional as F
 from torchdiffeq import odeint
 
-from .model import broadcast_grid
 
 
 def window_mean(values, selection, window):
@@ -39,11 +38,11 @@ def grid(model, z):
     return torch.linspace(0, 1, model.cfg.ode_steps + 1, device=z.device, dtype=torch.float32)
 
 
-def integrate(model, h, probability, marker, state, times):
+def integrate(model, h, marker, state, times):
     if times.numel() == 1:
         return state
     return odeint(
-        lambda t, z: model.velocity(t, z, h, probability, marker),
+        lambda t, z: model.velocity(t, z, h, marker),
         state,
         times,
         method="euler",
@@ -53,38 +52,31 @@ def integrate(model, h, probability, marker, state, times):
 def corrected_velocity(model, base, action):
     # Positive bilinear weights preserve an L-infinity bound at each pixel.
     rms = base.square().mean((1, 2, 3), keepdim=True).sqrt()
-    residual = model.cfg.velocity_limit * rms * broadcast_grid(action.tanh(), base)
+    residual = model.cfg.velocity_limit * rms * F.interpolate(action.tanh(), size=base.shape[-2:], mode="bilinear", align_corners=False)
     return base + residual
 
 
-def sample_rgb(model, h, tissue, marker, noise, policy=None):
-    probability = model.he_condition(h, tissue, marker)
+def sample_rgb(model, h, marker, noise, policy=None):
     times = grid(model, noise)
     if policy is None:
-        return integrate(model, h, probability, marker, noise, times).clamp(-1, 1), probability
+        return integrate(model, h, marker, noise, times).clamp(-1, 1)
     k = model.cfg.action_step
-    state = integrate(model, h, probability, marker, noise, times[:k + 1])
-    base = model.velocity(times[k], state, h, probability, marker)
-    observation = policy.observation(h, state, base, probability)
+    state = integrate(model, h, marker, noise, times[:k + 1])
+    base = model.velocity(times[k], state, h, marker)
+    observation = policy.observation(h, state, base)
     action = policy(observation)
     initial = state + (times[k + 1] - times[k]) * corrected_velocity(model, base, action)
-    result = integrate(model, h, probability, marker, initial, times[k + 1:])
-    return result.clamp(-1, 1), probability
+    result = integrate(model, h, marker, initial, times[k + 1:])
+    return result.clamp(-1, 1)
 
 
 def action_distribution(mean, std):
     return Independent(Normal(mean.float(), std), reinterpreted_batch_ndims=3)
 
 
-def unpaired_reward(model, he, generated, marker, indices, label=None):
-    """A bounded realism/structure proxy, not a biomarker correctness label."""
-    if model.expression_info is None:
-        endpoint = model.critic(generated, marker).sigmoid().flatten(1).mean(1)
-    else:
-        if label is None:
-            raise ValueError("Expression policy training requires an independent H&E expression label")
-        score = model.expression_scorers["IHC"](generated, marker).sigmoid()
-        endpoint = 1 - (score - label).square()
+def unpaired_reward(model, he, generated, marker, indices):
+    """Rate target-domain realism and spatial content on each candidate."""
+    endpoint = model.critic(generated, marker).sigmoid().flatten(1).mean(1)
     source = model.patch_encoder(he).flatten(2).transpose(1, 2)[:, indices]
     output = model.patch_encoder(generated).flatten(2).transpose(1, 2)[:, indices]
     source = F.normalize(source.float(), dim=-1)
@@ -96,15 +88,14 @@ def unpaired_reward(model, he, generated, marker, indices, label=None):
     return (0.5 * endpoint + 0.5 * structure).clamp(0, 1)
 
 
-def collect(model, policy, he, marker, label=None, *, direct=False):
+def collect(model, policy, he, marker, *, direct=False):
     cfg = model.cfg
     noise = torch.randn_like(he)
-    probability = model.he_condition(he, None, marker)
     times = grid(model, noise)
     k = cfg.action_step
-    state = integrate(model, he, probability, marker, noise, times[:k + 1])
-    base = model.velocity(times[k], state, he, probability, marker)
-    observation = policy.observation(he, state, base, probability)
+    state = integrate(model, he, marker, noise, times[:k + 1])
+    base = model.velocity(times[k], state, he, marker)
+    observation = policy.observation(he, state, base)
     mean = policy(observation)
     dist = action_distribution(mean, cfg.action_std)
     actions = dist.rsample((2,)) if direct else dist.sample((2,))
@@ -117,8 +108,8 @@ def collect(model, policy, he, marker, label=None, *, direct=False):
     rewards = []
     for action in actions:
         initial = state + dt * corrected_velocity(model, base, action)
-        rgb = integrate(model, he, probability, marker, initial, times[k + 1:]).clamp(-1, 1)
-        rewards.append(unpaired_reward(model, he, rgb, marker, indices, label))
+        rgb = integrate(model, he, marker, initial, times[k + 1:]).clamp(-1, 1)
+        rewards.append(unpaired_reward(model, he, rgb, marker, indices))
     return observation, mean, actions, log_prob, torch.stack(rewards)
 
 
