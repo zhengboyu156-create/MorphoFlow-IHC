@@ -41,7 +41,7 @@ def main(argv=None):
     preparation.add_argument("--config", type=Path, required=True)
     preparation.add_argument("--output", type=Path, required=True)
 
-    flow = sub.add_parser("train", help="Train label-free RGB flow and PatchNCE objectives")
+    flow = sub.add_parser("train", help="Train label-free RGB flow and stain-neutral morphology objectives")
     training_options(flow, 20.0, 4)
     flow.add_argument("--config", type=Path, required=True)
     flow.add_argument("--epochs", type=positive_int, default=25)

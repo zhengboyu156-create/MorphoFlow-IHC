@@ -21,6 +21,12 @@ class Config:
     action_step: int = 4
     nce_steps: int = 2
     nce_weight: float = 0.1
+    morphology_width: int = 32
+    morphology_channels: int = 64
+    morphology_teacher: str = "none"
+    morphology_teacher_dim: int = 768
+    teacher_input_size: int = 224
+    teacher_weight: float = 0.0
     adversarial_weight: float = 0.1
     critic_lr: float = 0.0002
     advantage_scale: float = 0.01
@@ -58,6 +64,16 @@ class Config:
             raise ValueError("overlap must be smaller than crop")
         if self.nce_steps < 1 or not math.isfinite(self.nce_weight) or self.nce_weight < 0:
             raise ValueError("PatchNCE steps must be positive and weight nonnegative")
+        if self.morphology_width < 8 or self.morphology_channels < 8:
+            raise ValueError("Morphology FPN widths must be at least 8")
+        if self.morphology_teacher_dim < 1 or self.teacher_input_size < 28:
+            raise ValueError("Invalid morphology teacher shape")
+        if not isinstance(self.morphology_teacher, str) or not self.morphology_teacher:
+            raise ValueError("morphology_teacher must be a model name or 'none'")
+        if not math.isfinite(self.teacher_weight) or self.teacher_weight < 0:
+            raise ValueError("teacher_weight must be finite and nonnegative")
+        if self.teacher_weight > 0 and self.morphology_teacher.lower() == "none":
+            raise ValueError("A positive teacher_weight requires a morphology_teacher")
         if not 0 <= self.action_step < self.ode_steps or self.ode_steps < 2:
             raise ValueError("action_step is zero-based and must index the Euler grid")
         positive = (self.pixel_size_um, self.h_scale, self.tissue_od,

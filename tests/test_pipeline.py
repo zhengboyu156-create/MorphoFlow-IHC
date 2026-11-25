@@ -10,6 +10,7 @@ from morphoflow_ihc.cli import main
 from morphoflow_ihc.config import Config
 from morphoflow_ihc.data import prepare
 from morphoflow_ihc.model import VelocityPolicy
+from morphoflow_ihc.morphology import LocalMorphologyFPN, hematoxylin_map, morphology_channels
 from morphoflow_ihc.stains import decompose, unit
 from morphoflow_ihc.trajectory import action_distribution, policy_update, terminal_reward
 
@@ -33,7 +34,7 @@ def test_policy_accepts_small_update_and_rolls_back_large_update():
     cfg = Config(rl_lr=1e-4)
     model = VelocityPolicy(cfg)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.rl_lr)
-    observation = torch.rand(1, 9, 2, 2)
+    observation = torch.rand(1, 12, 2, 2)
     with torch.no_grad():
         mean = model(observation)
         actor = action_distribution(mean, cfg.action_std)
@@ -152,6 +153,61 @@ def test_rgb_dab_diagnostic_matches_numpy_decomposition():
     np.testing.assert_allclose(actual, expected, atol=2e-5)
 
 
+def test_morphology_projection_cancels_pure_dab_change():
+    cfg = Config()
+    h = torch.linspace(0.05, 0.8, 64).reshape(1, 1, 8, 8)
+    h_vector = torch.tensor(cfg.stain_h)
+    h_vector = h_vector / h_vector.norm()
+    d_vector = torch.tensor(cfg.stain_d)
+    d_vector = d_vector / d_vector.norm()
+    images = []
+    for dab in (0.1, 0.9):
+        od = h[:, None, 0] * h_vector[None, :, None, None] + dab * d_vector[None, :, None, None]
+        images.append((2 * torch.exp(-od) - 1).clamp(-1, 1))
+    first = hematoxylin_map(images[0], cfg, "IHC")
+    second = hematoxylin_map(images[1], cfg, "IHC")
+    # The RGB<->OD convention includes the standard +1/256 stabilizer, so the
+    # cancellation is numerical rather than bit exact.
+    assert (first - second).abs().max() < 1e-3
+
+
+def test_local_morphology_fpn_is_dense_and_soft_not_a_hard_segmentation():
+    cfg = Config(crop=32, region=8, context=16, overlap=8)
+    image = torch.rand(2, 3, 32, 32) * 2 - 1
+    structure = morphology_channels(image, cfg, "HE")
+    features, compartments = LocalMorphologyFPN(16, 24)(structure)
+    assert features.shape == (2, 24, 8, 8)
+    assert compartments.shape == (2, 3, 8, 8)
+    torch.testing.assert_close(compartments.sum(1), torch.ones(2, 8, 8), atol=1e-6, rtol=0)
+    assert ((compartments > 0) & (compartments < 1)).all()
+
+
+def test_optional_teacher_regularizes_student_without_entering_checkpoint():
+    from morphoflow_ihc.model import StainFlow
+
+    class StubTeacher:
+        output_channels = 8
+
+        def __call__(self, canonical):
+            base = torch.nn.functional.adaptive_avg_pool2d(canonical.mean(1, keepdim=True), (4, 4))
+            return base.expand(-1, self.output_channels, -1, -1)
+
+    torch.set_num_threads(2)
+    cfg = Config(markers={"HER2": 0.35}, crop=32, region=8, context=16, overlap=8,
+                 channel_mult=(1, 1), ode_steps=2, action_step=0, morphology_width=8,
+                 morphology_channels=8, morphology_teacher="stub", morphology_teacher_dim=8,
+                 teacher_weight=0.1)
+    model = StainFlow(cfg)
+    rgb = torch.rand(1, 3, 32, 32) * 2 - 1
+    he = torch.rand_like(rgb) * 2 - 1
+    _, morphology_loss, _ = model.losses(rgb, he, torch.zeros(1, dtype=torch.long), StubTeacher())
+    morphology_loss.backward()
+    assert torch.isfinite(morphology_loss)
+    assert any(parameter.grad is not None and parameter.grad.abs().sum() > 0
+               for parameter in model.patch_encoder.parameters())
+    assert not any(name.startswith("teacher.model") for name in model.state_dict())
+
+
 def test_flow_target_is_not_passed_as_condition():
     from morphoflow_ihc.model import StainFlow
     torch.set_num_threads(2)
@@ -195,7 +251,7 @@ def test_policy_action_can_modify_rgb_channels_independently():
     cfg = Config(markers={'HER2': 0.35}, crop=32, region=8, context=16, overlap=8,
                  channel_mult=(1, 1), ode_steps=4, action_step=2)
     policy = VelocityPolicy(cfg)
-    observation = torch.zeros(1, 9, 4, 4)
+    observation = torch.zeros(1, 12, 4, 4)
     assert policy(observation).shape == (1, 3, 4, 4)
     class Dummy:
         pass

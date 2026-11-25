@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 from .config import Config
 from .data import IHCCrops, atomic_write
 from .model import StainFlow, VelocityPolicy
+from .morphology import build_teacher
 from .stains import canonical_size, decompose
 from .trajectory import (collect, direct_policy_update, policy_update, reward_indices, sample_rgb,
                          terminal_reward, unpaired_reward)
@@ -36,7 +37,7 @@ def precision(device):
 def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_optimizer=None, policy_objective=None,
                     flow_optimizer=None):
     state = {
-        "format": 4, "stage": stage, "step": step, "config": asdict(model.cfg),
+        "format": 5, "stage": stage, "step": step, "config": asdict(model.cfg),
         "model": model.state_dict(), "optimizer": optimizer.state_dict(),
     }
     if critic_optimizer is not None:
@@ -51,8 +52,8 @@ def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_opt
 
 def open_checkpoint(path, device):
     state = torch.load(path, map_location=device, weights_only=True)
-    if state.get("format") != 4 or state.get("stage") not in {"flow", "rl"}:
-        raise ValueError("This checkpoint is incompatible with label-free RGB flow. Train a new format 4 checkpoint")
+    if state.get("format") != 5 or state.get("stage") not in {"flow", "rl"}:
+        raise ValueError("This checkpoint predates the morphology FPN. Train a new format 5 checkpoint")
     model = StainFlow(Config(**state["config"])).to(device)
     model.load_state_dict(state["model"])
     policy = None
@@ -80,12 +81,12 @@ def flow_optimizers(model):
             torch.optim.AdamW(model.critic.parameters(), lr=model.cfg.critic_lr))
 
 
-def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=None):
+def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=None, teacher=None):
     cfg = model.cfg
     optimizer.zero_grad(set_to_none=True)
     critic_optimizer.zero_grad(set_to_none=True)
     with precision(he.device):
-        flow_loss, nce_loss, fake = model.losses(image, he, marker)
+        flow_loss, nce_loss, fake = model.losses(image, he, marker, teacher)
         critic_loss = 0.5 * (F.softplus(-model.critic(image, marker)).mean()
                              + F.softplus(model.critic(fake.detach(), marker)).mean())
     if not torch.isfinite(critic_loss):
@@ -132,6 +133,7 @@ def train_flow(args, cfg):
     device = choose_device(args.device)
     torch.manual_seed(args.seed)
     model = StainFlow(cfg).to(device)
+    teacher = build_teacher(cfg, device)
     step = 0
     if args.resume:
         model, _, state = open_checkpoint(args.resume, device)
@@ -150,7 +152,7 @@ def train_flow(args, cfg):
         if step >= target or time.monotonic() >= deadline:
             break
         marker, image, he = (value.to(device, non_blocking=True) for value in pack)
-        stats = flow_update(model, optimizer, critic_optimizer, image, he, marker)
+        stats = flow_update(model, optimizer, critic_optimizer, image, he, marker, teacher=teacher)
         step += 1
         if step == 1 or step % args.save_every == 0 or step == target:
             save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer)
@@ -166,6 +168,7 @@ def train_policy(args):
     torch.manual_seed(args.seed)
     model, policy, state = open_checkpoint(args.checkpoint, device)
     cfg = model.cfg
+    teacher = build_teacher(cfg, device)
     if args.advantage_scale is not None:
         cfg.advantage_scale = args.advantage_scale
     if args.policy_lr is not None:
@@ -207,7 +210,7 @@ def train_policy(args):
             stats = update(policy, optimizer, experience, cfg)
         finally:
             model.train().requires_grad_(True)
-        stats.update(flow_update(model, flow_optimizer, critic_optimizer, image, he, marker, policy))
+        stats.update(flow_update(model, flow_optimizer, critic_optimizer, image, he, marker, policy, teacher))
         stats["objective"] = objective
         groups += he.shape[0]
         if groups >= next_save or groups == args.groups or groups == he.shape[0]:

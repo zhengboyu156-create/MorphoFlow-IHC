@@ -13,6 +13,7 @@ dependencies = ["numpy>=1.24", "Pillow>=10", "torch>=2.7,<3", "torchcfm>=1.0,<2"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+foundation = ["transformers>=4.44,<5", "safetensors>=0.4"]
 
 [project.scripts]
 morphoflow-ihc = "morphoflow_ihc.cli:main"

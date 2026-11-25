@@ -63,7 +63,7 @@ def sample_rgb(model, h, marker, noise, policy=None):
     k = model.cfg.action_step
     state = integrate(model, h, marker, noise, times[:k + 1])
     base = model.velocity(times[k], state, h, marker)
-    observation = policy.observation(h, state, base)
+    observation = policy.observation(h, state, base, model.morphology(h, "HE")[1])
     action = policy(observation)
     initial = state + (times[k + 1] - times[k]) * corrected_velocity(model, base, action)
     result = integrate(model, h, marker, initial, times[k + 1:])
@@ -77,8 +77,8 @@ def action_distribution(mean, std):
 def unpaired_reward(model, he, generated, marker, indices):
     """Rate target-domain realism and spatial content on each candidate."""
     endpoint = model.critic(generated, marker).sigmoid().flatten(1).mean(1)
-    source = model.patch_encoder(he).flatten(2).transpose(1, 2)[:, indices]
-    output = model.patch_encoder(generated).flatten(2).transpose(1, 2)[:, indices]
+    source = model.morphology(he, "HE")[0].flatten(2).transpose(1, 2)[:, indices]
+    output = model.morphology(generated, "IHC")[0].flatten(2).transpose(1, 2)[:, indices]
     source = F.normalize(source.float(), dim=-1)
     output = F.normalize(output.float(), dim=-1)
     logits = torch.bmm(output, source.transpose(1, 2)) / 0.07
@@ -90,7 +90,7 @@ def unpaired_reward(model, he, generated, marker, indices):
 
 @torch.no_grad()
 def reward_indices(model, he):
-    height, width = model.patch_encoder(he).shape[-2:]
+    height, width = model.morphology(he, "HE")[0].shape[-2:]
     return torch.randperm(height * width, device=he.device)[:64]
 
 
@@ -101,7 +101,7 @@ def collect(model, policy, he, marker, *, direct=False):
     k = cfg.action_step
     state = integrate(model, he, marker, noise, times[:k + 1])
     base = model.velocity(times[k], state, he, marker)
-    observation = policy.observation(he, state, base)
+    observation = policy.observation(he, state, base, model.morphology(he, "HE")[1])
     mean = policy(observation)
     dist = action_distribution(mean, cfg.action_std)
     actions = dist.rsample((2,)) if direct else dist.sample((2,))
