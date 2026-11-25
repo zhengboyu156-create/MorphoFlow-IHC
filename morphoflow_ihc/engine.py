@@ -14,9 +14,10 @@ from torch.utils.data import DataLoader
 
 from .config import Config
 from .data import IHCCrops, atomic_write
-from .model import StainFlow, VelocityPolicy, broadcast_grid
-from .stains import canonical_size, decompose, render_rgb, resize_map
-from .trajectory import collect, policy_update, sample_dab, terminal_reward
+from .model import StainFlow, VelocityPolicy
+from .stains import canonical_size, decompose
+from .trajectory import (collect, direct_policy_update, policy_update, reward_indices, sample_rgb,
+                         terminal_reward, unpaired_reward)
 
 
 def choose_device(name):
@@ -32,25 +33,33 @@ def precision(device):
     return nullcontext()
 
 
-def save_checkpoint(path, model, optimizer, step, stage, policy=None):
+def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_optimizer=None, policy_objective=None,
+                    flow_optimizer=None):
     state = {
-        "format": 1, "stage": stage, "step": step, "config": asdict(model.cfg),
+        "format": 4, "stage": stage, "step": step, "config": asdict(model.cfg),
         "model": model.state_dict(), "optimizer": optimizer.state_dict(),
     }
+    if critic_optimizer is not None:
+        state["critic_optimizer"] = critic_optimizer.state_dict()
+    if flow_optimizer is not None:
+        state["flow_optimizer"] = flow_optimizer.state_dict()
     if policy is not None:
         state["policy"] = policy.state_dict()
+        state["policy_objective"] = policy_objective
     atomic_write(path, lambda stream: torch.save(state, stream))
 
 
 def open_checkpoint(path, device):
     state = torch.load(path, map_location=device, weights_only=True)
-    if state.get("format") != 1 or state.get("stage") not in {"flow", "rl"}:
-        raise ValueError("Unrecognized checkpoint format")
+    if state.get("format") != 4 or state.get("stage") not in {"flow", "rl"}:
+        raise ValueError("This checkpoint is incompatible with label-free RGB flow. Train a new format 4 checkpoint")
     model = StainFlow(Config(**state["config"])).to(device)
     model.load_state_dict(state["model"])
     policy = None
     if state["stage"] == "rl":
         policy = VelocityPolicy(model.cfg).to(device)
+        if state.get("policy", {}).get("net.4.weight", torch.empty(0)).shape[0] != 3:
+            raise ValueError("Incompatible policy checkpoint: retrain the RGB-channel policy")
         policy.load_state_dict(state["policy"])
     return model, policy, state
 
@@ -65,19 +74,74 @@ def make_loader(dataset, batch, workers, device):
                       pin_memory=device.type == "cuda", persistent_workers=workers > 0)
 
 
+def flow_optimizers(model):
+    parameters = [param for name, param in model.named_parameters() if not name.startswith("critic.")]
+    return (torch.optim.AdamW(parameters, lr=model.cfg.flow_lr),
+            torch.optim.AdamW(model.critic.parameters(), lr=model.cfg.critic_lr))
+
+
+def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=None):
+    cfg = model.cfg
+    optimizer.zero_grad(set_to_none=True)
+    critic_optimizer.zero_grad(set_to_none=True)
+    with precision(he.device):
+        flow_loss, nce_loss, fake = model.losses(image, he, marker)
+        critic_loss = 0.5 * (F.softplus(-model.critic(image, marker)).mean()
+                             + F.softplus(model.critic(fake.detach(), marker)).mean())
+    if not torch.isfinite(critic_loss):
+        raise FloatingPointError("Nonfinite critic loss")
+    critic_loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.critic.parameters(), 1.0, error_if_nonfinite=True)
+    critic_optimizer.step()
+    critic_optimizer.zero_grad(set_to_none=True)
+
+    model.critic.requires_grad_(False)
+    try:
+        with precision(he.device):
+            adversarial_loss = F.softplus(-model.critic(fake, marker)).mean()
+            loss = flow_loss + cfg.nce_weight * nce_loss + cfg.adversarial_weight * adversarial_loss
+            reward = None
+            if policy is not None and cfg.flow_reward_weight > 0:
+                # The reward graph updates the velocity network, while the policy
+                # and scoring networks act as fixed functions for this term.
+                policy.requires_grad_(False)
+                model.patch_encoder.requires_grad_(False)
+                try:
+                    generated = sample_rgb(model, he, marker, torch.randn_like(he), policy)
+                    reward = unpaired_reward(model, he, generated, marker, reward_indices(model, he)).mean()
+                    loss = loss + cfg.flow_reward_weight * (1 - reward)
+                finally:
+                    model.patch_encoder.requires_grad_(True)
+                    policy.requires_grad_(True)
+        if not torch.isfinite(loss):
+            raise FloatingPointError("Nonfinite flow training loss")
+        loss.backward()
+        parameters = [param for group in optimizer.param_groups for param in group["params"]]
+        torch.nn.utils.clip_grad_norm_(parameters, 1.0, error_if_nonfinite=True)
+        optimizer.step()
+    finally:
+        model.critic.requires_grad_(True)
+    stats = {"flow_loss": flow_loss.item(), "nce_loss": nce_loss.item(),
+             "critic_loss": critic_loss.item(), "adversarial_loss": adversarial_loss.item()}
+    if reward is not None:
+        stats["flow_reward"] = reward.item()
+    return stats
+
+
 def train_flow(args, cfg):
     device = choose_device(args.device)
     torch.manual_seed(args.seed)
     model = StainFlow(cfg).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.flow_lr)
     step = 0
     if args.resume:
         model, _, state = open_checkpoint(args.resume, device)
         if state["stage"] != "flow" or model.cfg != cfg:
             raise ValueError("Resume requires a flow checkpoint with the same model configuration")
         step = state["step"]
-        optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.flow_lr)
+    optimizer, critic_optimizer = flow_optimizers(model)
+    if args.resume:
         optimizer.load_state_dict(state["optimizer"])
+        critic_optimizer.load_state_dict(state["critic_optimizer"])
     dataset = IHCCrops(args.cache, cfg)
     loader = make_loader(dataset, args.batch, args.workers, device)
     target = args.steps or args.epochs * len(loader)
@@ -85,24 +149,15 @@ def train_flow(args, cfg):
     for pack in batches(loader):
         if step >= target or time.monotonic() >= deadline:
             break
-        h, reference, tissue, marker = (value.to(device, non_blocking=True) for value in pack)
-        optimizer.zero_grad(set_to_none=True)
-        with precision(device):
-            region_loss, flow_loss = model.losses(h / cfg.h_scale, reference, tissue, marker)
-            loss = region_loss + flow_loss
-        if not torch.isfinite(loss):
-            raise FloatingPointError("Nonfinite supervised loss")
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
-        optimizer.step()
+        marker, image, he = (value.to(device, non_blocking=True) for value in pack)
+        stats = flow_update(model, optimizer, critic_optimizer, image, he, marker)
         step += 1
         if step == 1 or step % args.save_every == 0 or step == target:
-            save_checkpoint(args.output, model, optimizer, step, "flow")
-            print(json.dumps({"stage": "flow", "step": step, "region_loss": region_loss.item(),
-                              "flow_loss": flow_loss.item()}), flush=True)
+            save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer)
+            print(json.dumps({"stage": "flow", "step": step, **stats}), flush=True)
         if step >= target or time.monotonic() >= deadline:
             break
-    save_checkpoint(args.output, model, optimizer, step, "flow")
+    save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer)
     print(json.dumps({"stage": "flow", "step": step, "target": target, "file": str(args.output)}))
 
 
@@ -111,15 +166,29 @@ def train_policy(args):
     torch.manual_seed(args.seed)
     model, policy, state = open_checkpoint(args.checkpoint, device)
     cfg = model.cfg
-    model.eval().requires_grad_(False)
+    if args.advantage_scale is not None:
+        cfg.advantage_scale = args.advantage_scale
+    if args.policy_lr is not None:
+        cfg.rl_lr = args.policy_lr
+    flow_optimizer, critic_optimizer = flow_optimizers(model)
+    if state["stage"] == "rl" and "flow_optimizer" not in state:
+        raise ValueError("Start joint training from a base flow checkpoint or resume a joint checkpoint")
+    flow_optimizer.load_state_dict(state["flow_optimizer"] if state["stage"] == "rl" else state["optimizer"])
+    critic_optimizer.load_state_dict(state["critic_optimizer"])
     if policy is None:
         policy = VelocityPolicy(cfg).to(device)
     optimizer = torch.optim.AdamW(policy.parameters(), lr=cfg.rl_lr)
     groups = 0
+    objective = args.objective
     if state["stage"] == "rl":
+        if (state.get("policy_objective") or "ppo") != objective:
+            raise ValueError("Start both objectives from the same base flow checkpoint")
         groups = state["step"]
         optimizer.load_state_dict(state["optimizer"])
-    dataset = IHCCrops(args.cache, cfg, prioritize_positive=True)
+        if args.policy_lr is not None:
+            for group in optimizer.param_groups:
+                group["lr"] = cfg.rl_lr
+    dataset = IHCCrops(args.cache, cfg)
     loader = make_loader(dataset, args.batch, args.workers, device)
     next_save = groups + args.save_every
     deadline = time.monotonic() + 3600 * args.hours
@@ -127,18 +196,29 @@ def train_policy(args):
         if groups >= args.groups or time.monotonic() >= deadline:
             break
         limit = args.groups - groups
-        h, reference, tissue, marker = (value[:limit].to(device, non_blocking=True) for value in pack)
-        with precision(device):
-            experience = collect(model, policy, h / cfg.h_scale, reference, tissue, marker)
-        stats = policy_update(policy, optimizer, experience, cfg)
-        groups += h.shape[0]
-        if groups >= next_save or groups == args.groups or groups == h.shape[0]:
-            save_checkpoint(args.output, model, optimizer, groups, "rl", policy)
+        marker, image, he = (value[:limit].to(device, non_blocking=True) for value in pack)
+        direct = objective == "direct"
+        # Keep this rollout's environment fixed through its policy update.
+        model.eval().requires_grad_(False)
+        try:
+            with precision(device), torch.set_grad_enabled(direct):
+                experience = collect(model, policy, he, marker, direct=direct)
+            update = direct_policy_update if direct else policy_update
+            stats = update(policy, optimizer, experience, cfg)
+        finally:
+            model.train().requires_grad_(True)
+        stats.update(flow_update(model, flow_optimizer, critic_optimizer, image, he, marker, policy))
+        stats["objective"] = objective
+        groups += he.shape[0]
+        if groups >= next_save or groups == args.groups or groups == he.shape[0]:
+            save_checkpoint(args.output, model, optimizer, groups, "rl", policy, critic_optimizer=critic_optimizer,
+                            policy_objective=objective, flow_optimizer=flow_optimizer)
             next_save = groups + args.save_every
             print(json.dumps({"stage": "rl", "groups": groups, **stats}), flush=True)
         if groups >= args.groups or time.monotonic() >= deadline:
             break
-    save_checkpoint(args.output, model, optimizer, groups, "rl", policy)
+    save_checkpoint(args.output, model, optimizer, groups, "rl", policy, critic_optimizer=critic_optimizer,
+                            policy_objective=objective, flow_optimizer=flow_optimizer)
     print(json.dumps({"stage": "rl", "groups": groups, "target": args.groups, "file": str(args.output)}))
 
 
@@ -161,47 +241,37 @@ def infer(args):
     marker = torch.tensor([cfg.marker_id(args.marker)], device=device)
     with Image.open(args.image) as raw:
         source = raw.convert("RGB")
-    native_h, _, native_tissue = decompose(np.asarray(source), cfg, "HE")
-    size = canonical_size(source.size, args.mpp if args.mpp is not None else cfg.pixel_size_um, cfg)
-    scaled_h = resize_map(native_h, size)
-    scaled_tissue = resize_map(native_tissue.astype(np.float32), size) >= 0.5
-    height, width = scaled_h.shape
+    native_size = source.size
+    size = canonical_size(native_size, args.mpp if args.mpp is not None else cfg.pixel_size_um, cfg)
+    scaled = source.resize(size, Image.Resampling.BILINEAR) if size != native_size else source
+    rgb = np.asarray(scaled)
+    height, width = rgb.shape[:2]
     tile = cfg.crop
     padded_shape = max(height, tile), max(width, tile)
-    pad = ((0, padded_shape[0] - height), (0, padded_shape[1] - width))
-    h = torch.from_numpy(np.pad(scaled_h / cfg.h_scale, pad))
-    tissue = torch.from_numpy(np.pad(scaled_tissue, pad))
-    noise_gen = torch.Generator().manual_seed(args.seed)
-    noise = torch.randn(padded_shape, generator=noise_gen)
-    dab_total = torch.zeros(padded_shape)
-    prob_total = torch.zeros_like(dab_total)
-    weight_total = torch.zeros_like(dab_total)
+    image = np.pad(rgb, ((0,padded_shape[0]-height),(0,padded_shape[1]-width),(0,0)), constant_values=255)
+    image = torch.from_numpy(image.copy()).permute(2,0,1).float() / 127.5 - 1
+    noise = torch.randn((3,*padded_shape), generator=torch.Generator().manual_seed(args.seed))
+    total = torch.zeros((3,*padded_shape))
+    weight_total = torch.zeros(padded_shape)
     taper = torch.hann_window(tile, periodic=False).clamp_min(0.05)
-    blend = taper[:, None] * taper[None, :]
-    stride = tile - cfg.overlap
-    for y in offsets(height, tile, stride):
-        for x in offsets(width, tile, stride):
-            region = (slice(y, y + tile), slice(x, x + tile))
-            h_tile, tissue_tile, noise_tile = (a[region][None, None].to(device) for a in (h, tissue, noise))
+    blend = taper[:,None] * taper[None,:]
+    for y in offsets(height, tile, tile-cfg.overlap):
+        for x in offsets(width, tile, tile-cfg.overlap):
+            region = (slice(y,y+tile),slice(x,x+tile))
+            image_tile = image[:,region[0],region[1]][None].to(device)
+            noise_tile = noise[:,region[0],region[1]][None].to(device)
             with precision(device):
-                estimate, probability = sample_dab(model, h_tile, tissue_tile, marker, noise_tile, policy)
-            dab_total[region] += estimate.float().cpu()[0, 0] * blend
-            prob_total[region] += broadcast_grid(probability, h_tile).float().cpu()[0, 0] * blend
+                estimate = sample_rgb(model, image_tile, marker, noise_tile, policy)
+            total[:,region[0],region[1]] += estimate.float().cpu()[0] * blend
             weight_total[region] += blend
-    dab = resize_map((dab_total / weight_total)[:height, :width].numpy(), source.size)
-    probability = resize_map((prob_total / weight_total)[:height, :width].numpy(), source.size)
-    if not np.isfinite(dab).all():
-        raise FloatingPointError("Inference produced nonfinite DAB")
-    corrected_h = cfg.counterstain_gain * native_h
-    rendered = render_rgb(corrected_h, dab, cfg)
-    # PNG makes the supplied coordinate grid and rendered RGB reproducible.
+    result = (total / weight_total)[:,:height,:width].permute(1,2,0).clamp(-1,1).numpy()
+    rendered = Image.fromarray(np.rint((result + 1)*127.5).astype(np.uint8)).resize(native_size, Image.Resampling.BILINEAR)
     atomic_write(args.output, lambda stream: rendered.save(stream, format="PNG"))
     if args.maps:
-        atomic_write(args.maps, lambda stream: np.savez_compressed(
-            stream, h=corrected_h, dab=dab, probability=probability
-        ))
-    print(json.dumps({"marker": args.marker.upper(), "width": source.width, "height": source.height,
-                      "rl": policy is not None, "file": str(args.output)}))
+        _, dab, _ = decompose(np.asarray(rendered), cfg, "IHC")
+        atomic_write(args.maps, lambda stream: np.savez_compressed(stream, dab=dab))
+    print(json.dumps({"marker":args.marker.upper(), "width":source.width, "height":source.height,
+                      "rl":policy is not None, "file":str(args.output)}))
 
 
 def evaluate(args, cfg):

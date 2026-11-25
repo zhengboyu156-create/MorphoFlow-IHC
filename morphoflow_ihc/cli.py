@@ -36,12 +36,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="morphoflow-ihc")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    preparation = sub.add_parser("prepare", help="Build a cache from training IHC only")
+    preparation = sub.add_parser("prepare", help="Build a cache from separate training H&E and IHC pools")
     preparation.add_argument("--manifest", type=Path, required=True)
     preparation.add_argument("--config", type=Path, required=True)
     preparation.add_argument("--output", type=Path, required=True)
 
-    flow = sub.add_parser("train", help="Train the region and flow-matching objectives")
+    flow = sub.add_parser("train", help="Train label-free RGB flow and PatchNCE objectives")
     training_options(flow, 20.0, 4)
     flow.add_argument("--config", type=Path, required=True)
     flow.add_argument("--epochs", type=positive_int, default=25)
@@ -51,7 +51,10 @@ def main(argv=None):
     policy = sub.add_parser("train-rl", help="Optimize the bounded velocity policy at one time step")
     training_options(policy, 6.0, 1)
     policy.add_argument("--checkpoint", type=Path, required=True)
+    policy.add_argument("--objective", choices=("ppo", "direct"), default="ppo")
     policy.add_argument("--groups", type=positive_int, default=3000)
+    policy.add_argument("--advantage-scale", type=duration, help="Explicit PPO advantage normalization scale")
+    policy.add_argument("--policy-lr", type=duration, help="Explicit policy learning rate")
 
     prediction = sub.add_parser("infer", help="Generate native-size IHC from H&E and a marker")
     prediction.add_argument("--checkpoint", type=Path, required=True)
@@ -83,7 +86,7 @@ def main(argv=None):
         if args.command == "prepare":
             from .data import prepare
             count = prepare(args.manifest, args.output, read_config(args.config))
-            print(f"Prepared {count} training IHC images in {args.output}")
+            print(f"Prepared {count} training IHC images and an H&E pool in {args.output}")
         else:
             from . import engine
             if args.command == "train":
