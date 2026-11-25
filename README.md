@@ -22,7 +22,7 @@ The archived `datasets/MIST_HER2/manifest.csv` is a provenance manifest with a d
 
 - **Flow matching** learns IHC appearance using RGB images sampled from the IHC pool. The separate source image condition is zero for this term.
 - **H&E-conditioned generation** uses the same integration grid during training and inference. PatchNCE compares the input H&E with its generated image. The IHC discriminator compares the generated image with independently sampled real IHC.
-- **Trajectory policy** scores candidates on IHC appearance and input/output structure, using a frozen discriminator and patch encoder. Start `--objective ppo` and `--objective direct` from the same flow checkpoint for a matched rollout comparison.
+- **Joint trajectory training** alternates policy and flow updates. The policy samples corrections using the current flow and an appearance/structure reward. The flow then updates on its original objectives plus the reward of a new rollout using the policy mean. Start `--objective ppo` and `--objective direct` from the same flow checkpoint for a matched rollout comparison. The default `flow_reward_weight` is 0.1.
 
 The training data consist of RGB images and target stain identity such as HER2. Stain identity selects the IHC domain. Expression grades, annotations and expression masks are absent from training. The DAB map is an optional diagnostic computed from generated RGB. Keep paired references in held-out groups for evaluation. These learning signals establish neither expression status nor cell-level localization, and the new training mode requires real-image validation.
 
@@ -44,4 +44,4 @@ python -m morphoflow_ihc infer --checkpoint runs/rgb_flow.pt --image data/he.png
 python -m pytest -q
 ```
 
-The default command writes RGB-only training caches (format 3). An old cache (format 2) can still be used if it contains both RGB pools. Training reads only its RGB arrays. RGB flow and policy weights require format 4 checkpoints. Earlier code and results remain in Git history.
+The default command writes RGB-only training caches (format 3). An old cache (format 2) can still be used if it contains both RGB pools. Training reads only its RGB arrays. RGB flow and policy weights require format 4 checkpoints. Previous format 4 policy checkpoints can be used for inference. Start joint training from a base flow checkpoint to initialize all three optimizers. Joint checkpoints save the policy, flow and discriminator optimizer states for resuming. Earlier code and results remain in Git history.

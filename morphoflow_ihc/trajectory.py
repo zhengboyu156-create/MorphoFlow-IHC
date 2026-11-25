@@ -51,7 +51,7 @@ def integrate(model, h, marker, state, times):
 
 def corrected_velocity(model, base, action):
     # Positive bilinear weights preserve an L-infinity bound at each pixel.
-    rms = base.square().mean((1, 2, 3), keepdim=True).sqrt()
+    rms = torch.linalg.vector_norm(base, dim=(1, 2, 3), keepdim=True) / math.sqrt(base[0].numel())
     residual = model.cfg.velocity_limit * rms * F.interpolate(action.tanh(), size=base.shape[-2:], mode="bilinear", align_corners=False)
     return base + residual
 
@@ -88,6 +88,12 @@ def unpaired_reward(model, he, generated, marker, indices):
     return (0.5 * endpoint + 0.5 * structure).clamp(0, 1)
 
 
+@torch.no_grad()
+def reward_indices(model, he):
+    height, width = model.patch_encoder(he).shape[-2:]
+    return torch.randperm(height * width, device=he.device)[:64]
+
+
 def collect(model, policy, he, marker, *, direct=False):
     cfg = model.cfg
     noise = torch.randn_like(he)
@@ -101,10 +107,8 @@ def collect(model, policy, he, marker, *, direct=False):
     actions = dist.rsample((2,)) if direct else dist.sample((2,))
     log_prob = dist.log_prob(actions)
     dt = times[k + 1] - times[k]
-    # Share the same negative locations between both candidate trajectories.
-    length = model.patch_encoder(he).shape[-2:]
-    count = min(64, length[0] * length[1])
-    indices = torch.randperm(length[0] * length[1], device=he.device)[:count]
+    # Share sampled locations between both candidate trajectories.
+    indices = reward_indices(model, he)
     rewards = []
     for action in actions:
         initial = state + dt * corrected_velocity(model, base, action)

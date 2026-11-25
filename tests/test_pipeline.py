@@ -94,7 +94,15 @@ def test_cli_pipeline(tmp_path):
     main(base + ["--steps", "1", "--batch", "2"])
     main(base + ["--steps", "2", "--resume", flow])
     main(["train-rl", "--cache", cache, "--checkpoint", flow, "--output", rl, "--groups", "2", "--device", "cpu"])
-    assert torch.load(rl, weights_only=True)["step"] == 2
+    joint = torch.load(rl, weights_only=True)
+    initial = torch.load(flow, weights_only=True)
+    assert joint["step"] == 2
+    assert {"flow_optimizer", "critic_optimizer"} <= joint.keys()
+    assert any(not torch.equal(value, initial["model"][name])
+               for name, value in joint["model"].items() if name.startswith("net."))
+    main(["train-rl", "--cache", cache, "--checkpoint", rl, "--output", rl,
+          "--groups", "3", "--device", "cpu"])
+    assert torch.load(rl, weights_only=True)["step"] == 3
     direct = tmp_path / "direct.pt"
     main(["train-rl", "--cache", cache, "--checkpoint", flow, "--output", str(direct),
           "--objective", "direct", "--groups", "2", "--device", "cpu"])
@@ -200,3 +208,26 @@ def test_policy_action_can_modify_rgb_channels_independently():
     assert torch.all(output[:, 0] > 1)
     torch.testing.assert_close(output[:, 1:], base[:, 1:])
     assert torch.max(torch.abs(output - base)) <= cfg.velocity_limit + 1e-6
+
+
+def test_terminal_reward_gradient_reaches_flow():
+    from morphoflow_ihc.model import StainFlow
+    from morphoflow_ihc.trajectory import reward_indices, sample_rgb, unpaired_reward
+
+    torch.set_num_threads(2)
+    torch.manual_seed(39)
+    cfg = Config(crop=32, region=8, context=16, overlap=8,
+                 channel_mult=(1, 1), ode_steps=2, action_step=0)
+    model = StainFlow(cfg)
+    model.critic.requires_grad_(False)
+    model.patch_encoder.requires_grad_(False)
+    policy = VelocityPolicy(cfg).requires_grad_(False)
+    he = torch.rand(1, 3, 32, 32).mul(2).sub(1)
+    marker = torch.zeros(1, dtype=torch.long)
+    generated = sample_rgb(model, he, marker, torch.randn_like(he), policy)
+    reward = unpaired_reward(model, he, generated, marker, reward_indices(model, he)).mean()
+    reward.backward()
+    assert any(p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0
+               for p in model.net.parameters())
+    assert all(p.grad is None for module in (policy, model.critic, model.patch_encoder)
+               for p in module.parameters())

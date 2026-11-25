@@ -16,7 +16,8 @@ from .config import Config
 from .data import IHCCrops, atomic_write
 from .model import StainFlow, VelocityPolicy
 from .stains import canonical_size, decompose
-from .trajectory import collect, direct_policy_update, policy_update, sample_rgb, terminal_reward
+from .trajectory import (collect, direct_policy_update, policy_update, reward_indices, sample_rgb,
+                         terminal_reward, unpaired_reward)
 
 
 def choose_device(name):
@@ -32,13 +33,16 @@ def precision(device):
     return nullcontext()
 
 
-def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_optimizer=None, policy_objective=None):
+def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_optimizer=None, policy_objective=None,
+                    flow_optimizer=None):
     state = {
         "format": 4, "stage": stage, "step": step, "config": asdict(model.cfg),
         "model": model.state_dict(), "optimizer": optimizer.state_dict(),
     }
     if critic_optimizer is not None:
         state["critic_optimizer"] = critic_optimizer.state_dict()
+    if flow_optimizer is not None:
+        state["flow_optimizer"] = flow_optimizer.state_dict()
     if policy is not None:
         state["policy"] = policy.state_dict()
         state["policy_objective"] = policy_objective
@@ -70,6 +74,60 @@ def make_loader(dataset, batch, workers, device):
                       pin_memory=device.type == "cuda", persistent_workers=workers > 0)
 
 
+def flow_optimizers(model):
+    parameters = [param for name, param in model.named_parameters() if not name.startswith("critic.")]
+    return (torch.optim.AdamW(parameters, lr=model.cfg.flow_lr),
+            torch.optim.AdamW(model.critic.parameters(), lr=model.cfg.critic_lr))
+
+
+def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=None):
+    cfg = model.cfg
+    optimizer.zero_grad(set_to_none=True)
+    critic_optimizer.zero_grad(set_to_none=True)
+    with precision(he.device):
+        flow_loss, nce_loss, fake = model.losses(image, he, marker)
+        critic_loss = 0.5 * (F.softplus(-model.critic(image, marker)).mean()
+                             + F.softplus(model.critic(fake.detach(), marker)).mean())
+    if not torch.isfinite(critic_loss):
+        raise FloatingPointError("Nonfinite critic loss")
+    critic_loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.critic.parameters(), 1.0, error_if_nonfinite=True)
+    critic_optimizer.step()
+    critic_optimizer.zero_grad(set_to_none=True)
+
+    model.critic.requires_grad_(False)
+    try:
+        with precision(he.device):
+            adversarial_loss = F.softplus(-model.critic(fake, marker)).mean()
+            loss = flow_loss + cfg.nce_weight * nce_loss + cfg.adversarial_weight * adversarial_loss
+            reward = None
+            if policy is not None and cfg.flow_reward_weight > 0:
+                # The reward graph updates the velocity network, while the policy
+                # and scoring networks act as fixed functions for this term.
+                policy.requires_grad_(False)
+                model.patch_encoder.requires_grad_(False)
+                try:
+                    generated = sample_rgb(model, he, marker, torch.randn_like(he), policy)
+                    reward = unpaired_reward(model, he, generated, marker, reward_indices(model, he)).mean()
+                    loss = loss + cfg.flow_reward_weight * (1 - reward)
+                finally:
+                    model.patch_encoder.requires_grad_(True)
+                    policy.requires_grad_(True)
+        if not torch.isfinite(loss):
+            raise FloatingPointError("Nonfinite flow training loss")
+        loss.backward()
+        parameters = [param for group in optimizer.param_groups for param in group["params"]]
+        torch.nn.utils.clip_grad_norm_(parameters, 1.0, error_if_nonfinite=True)
+        optimizer.step()
+    finally:
+        model.critic.requires_grad_(True)
+    stats = {"flow_loss": flow_loss.item(), "nce_loss": nce_loss.item(),
+             "critic_loss": critic_loss.item(), "adversarial_loss": adversarial_loss.item()}
+    if reward is not None:
+        stats["flow_reward"] = reward.item()
+    return stats
+
+
 def train_flow(args, cfg):
     device = choose_device(args.device)
     torch.manual_seed(args.seed)
@@ -80,10 +138,7 @@ def train_flow(args, cfg):
         if state["stage"] != "flow" or model.cfg != cfg:
             raise ValueError("Resume requires a flow checkpoint with the same model configuration")
         step = state["step"]
-    generator_params = [p for name, p in model.named_parameters()
-                        if not name.startswith("critic.") and p.requires_grad]
-    optimizer = torch.optim.AdamW(generator_params, lr=cfg.flow_lr)
-    critic_optimizer = torch.optim.AdamW(model.critic.parameters(), lr=cfg.critic_lr)
+    optimizer, critic_optimizer = flow_optimizers(model)
     if args.resume:
         optimizer.load_state_dict(state["optimizer"])
         critic_optimizer.load_state_dict(state["critic_optimizer"])
@@ -95,33 +150,11 @@ def train_flow(args, cfg):
         if step >= target or time.monotonic() >= deadline:
             break
         marker, image, he = (value.to(device, non_blocking=True) for value in pack)
-        optimizer.zero_grad(set_to_none=True)
-        with precision(device):
-            flow_loss, nce_loss, fake = model.losses(image, he, marker)
-            critic_optimizer.zero_grad(set_to_none=True)
-            critic_loss = (F.softplus(-model.critic(image, marker)).mean() + F.softplus(model.critic(fake.detach(), marker)).mean()) * 0.5
-        if not torch.isfinite(critic_loss):
-            raise FloatingPointError("Nonfinite critic loss")
-        critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.critic.parameters(), 1.0, error_if_nonfinite=True)
-        critic_optimizer.step()
-        critic_optimizer.zero_grad(set_to_none=True)
-        model.critic.requires_grad_(False)
-        with precision(device):
-            adversarial_loss = F.softplus(-model.critic(fake, marker)).mean()
-            loss = flow_loss + cfg.nce_weight * nce_loss + cfg.adversarial_weight * adversarial_loss
-        if not torch.isfinite(loss):
-            raise FloatingPointError("Nonfinite flow training loss")
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(generator_params, 1.0, error_if_nonfinite=True)
-        optimizer.step()
-        model.critic.requires_grad_(True)
+        stats = flow_update(model, optimizer, critic_optimizer, image, he, marker)
         step += 1
         if step == 1 or step % args.save_every == 0 or step == target:
             save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer)
-            print(json.dumps({"stage": "flow", "step": step,
-                              "flow_loss": flow_loss.item(), "nce_loss": nce_loss.item(),
-                              "critic_loss": critic_loss.item(), "adversarial_loss": adversarial_loss.item()}), flush=True)
+            print(json.dumps({"stage": "flow", "step": step, **stats}), flush=True)
         if step >= target or time.monotonic() >= deadline:
             break
     save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer)
@@ -137,7 +170,11 @@ def train_policy(args):
         cfg.advantage_scale = args.advantage_scale
     if args.policy_lr is not None:
         cfg.rl_lr = args.policy_lr
-    model.eval().requires_grad_(False)
+    flow_optimizer, critic_optimizer = flow_optimizers(model)
+    if state["stage"] == "rl" and "flow_optimizer" not in state:
+        raise ValueError("Start joint training from a base flow checkpoint or resume a joint checkpoint")
+    flow_optimizer.load_state_dict(state["flow_optimizer"] if state["stage"] == "rl" else state["optimizer"])
+    critic_optimizer.load_state_dict(state["critic_optimizer"])
     if policy is None:
         policy = VelocityPolicy(cfg).to(device)
     optimizer = torch.optim.AdamW(policy.parameters(), lr=cfg.rl_lr)
@@ -159,21 +196,29 @@ def train_policy(args):
         if groups >= args.groups or time.monotonic() >= deadline:
             break
         limit = args.groups - groups
-        marker, he = (value[:limit].to(device, non_blocking=True) for value in (pack[0], pack[2]))
+        marker, image, he = (value[:limit].to(device, non_blocking=True) for value in pack)
         direct = objective == "direct"
-        with precision(device), torch.set_grad_enabled(direct):
-            experience = collect(model, policy, he, marker, direct=direct)
-        update = direct_policy_update if direct else policy_update
-        stats = update(policy, optimizer, experience, cfg)
+        # Keep this rollout's environment fixed through its policy update.
+        model.eval().requires_grad_(False)
+        try:
+            with precision(device), torch.set_grad_enabled(direct):
+                experience = collect(model, policy, he, marker, direct=direct)
+            update = direct_policy_update if direct else policy_update
+            stats = update(policy, optimizer, experience, cfg)
+        finally:
+            model.train().requires_grad_(True)
+        stats.update(flow_update(model, flow_optimizer, critic_optimizer, image, he, marker, policy))
         stats["objective"] = objective
         groups += he.shape[0]
         if groups >= next_save or groups == args.groups or groups == he.shape[0]:
-            save_checkpoint(args.output, model, optimizer, groups, "rl", policy, policy_objective=objective)
+            save_checkpoint(args.output, model, optimizer, groups, "rl", policy, critic_optimizer=critic_optimizer,
+                            policy_objective=objective, flow_optimizer=flow_optimizer)
             next_save = groups + args.save_every
             print(json.dumps({"stage": "rl", "groups": groups, **stats}), flush=True)
         if groups >= args.groups or time.monotonic() >= deadline:
             break
-    save_checkpoint(args.output, model, optimizer, groups, "rl", policy, policy_objective=objective)
+    save_checkpoint(args.output, model, optimizer, groups, "rl", policy, critic_optimizer=critic_optimizer,
+                            policy_objective=objective, flow_optimizer=flow_optimizer)
     print(json.dumps({"stage": "rl", "groups": groups, "target": args.groups, "file": str(args.output)}))
 
 

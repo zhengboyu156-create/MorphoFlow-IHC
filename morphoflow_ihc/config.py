@@ -36,6 +36,7 @@ class Config:
     kl_limit: float = 0.02
     flow_lr: float = 0.0002
     rl_lr: float = 0.00001
+    flow_reward_weight: float = 0.1
 
     def __post_init__(self):
         canonical = {key.upper(): float(value) for key, value in self.markers.items()}
@@ -65,6 +66,8 @@ class Config:
                     *self.markers.values())
         if any(not math.isfinite(value) or value <= 0 for value in positive):
             raise ValueError("Physical and optimization scales must be finite and positive")
+        if not math.isfinite(self.flow_reward_weight) or self.flow_reward_weight < 0:
+            raise ValueError("Flow reward weight must be finite and nonnegative")
         if not 0 <= self.intensity_weight <= 1 or not 0 < self.ppo_clip < 1:
             raise ValueError("Invalid reward or PPO weight")
         for name in ("stain_h", "stain_e", "stain_d"):
