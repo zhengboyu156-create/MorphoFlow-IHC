@@ -1,5 +1,9 @@
 # Segmentation-free morphology encoder preflight
 
+> Superseded training-data design: after review, the implementation changed to paired H&E/IHC crops, conditional flow matching, and paired regional DAB rewards. The execution observations below remain historical; the earlier unpaired limitation explains why this redesign was needed.
+>
+> The DINO teacher prototype described below was also retired. It is not part of the current three-term generator objective or current model implementation; these checks must not be cited as validation of the paired PatchNCE implementation.
+
 Date: 2026-11-26 (Asia/Shanghai)
 
 ## Locked implementation
@@ -24,4 +28,4 @@ Date: 2026-11-26 (Asia/Shanghai)
 
 ## Not established
 
-This preflight checks execution and information routing. It does not show that the three soft weights equal biological nuclei, membranes or compartments, nor that unpaired morphology uniquely determines marker expression. Real-image retrieval, localization and generation quality require held-out experiments before long training.
+This preflight checks execution and information routing. It does not show that the three soft weights equal biological nuclei, membranes or compartments. Paired supervision now provides regional expression targets, but real-image localization and generation quality still require held-out, registration-aware experiments before long training.

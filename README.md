@@ -1,31 +1,33 @@
-# MorphoFlow-IHC — unpaired RGB flow prototype
+# MorphoFlow-IHC — paired RGB flow prototype
 
-Experimental H&E → RGB IHC generation. This branch removes target-IHC self-conditioning and the fixed hematoxylin/DAB compositor. It adds an H&E-conditioned stain-neutral morphology rollout and a marker-conditioned IHC discriminator. Its trajectory policy scores unpaired image realism and structure proxies. **No pathology-level accuracy, convergence, or training-time guarantee has been established.**
+Experimental paired H&E → RGB IHC generation. This branch trains conditional flow matching on corresponding H&E/IHC crops and uses the paired IHC DAB map to score regional expression during trajectory optimization. **No pathology-level accuracy, convergence, or training-time guarantee has been established.**
 
 ## Training data
 
-MIST HER2 images and their provenance are documented in [datasets/MIST_HER2](datasets/MIST_HER2/README.md); images use Git LFS. The dataset's original license and citation requirements apply separately from this repository's code license. Training requires separate H&E and IHC image pools, plus marker information for IHC. A CSV manifest has fields `path,marker,group,domain,split,mpp`; H&E training marker may be blank. Paths may be relative to the CSV. A group must not cross splits; use patient IDs where available. A filename prefix is not necessarily a patient ID.
+MIST HER2 images and their provenance are documented in [datasets/MIST_HER2](datasets/MIST_HER2/README.md); images use Git LFS. The dataset's original license and citation requirements apply separately from this repository's code license. Training requires paired H&E/IHC rows sharing a `pair_id`. A group must not cross splits; use patient IDs where available. A filename prefix is not necessarily a patient ID.
 
-Example training manifest (HE and IHC are independent pools; `group` examples are illustrative):
+Example training manifest (`group` examples are illustrative):
 
 ```csv
-path,marker,group,domain,split,mpp
-he/p001.png,,p001,HE,train,0.4661
-ihc/p002.png,HER2,p002,IHC,train,0.4661
-he/p003.png,,p003,HE,val,0.4661
-ihc/p003.png,HER2,p003,IHC,val,0.4661
+path,marker,group,domain,split,pair_id,mpp
+he/p001.png,,slide-01,HE,train,pair-001,0.4661
+ihc/p001.png,HER2,slide-01,IHC,train,pair-001,0.4661
+he/p002.png,,slide-02,HE,val,pair-002,0.4661
+ihc/p002.png,HER2,slide-02,IHC,val,pair-002,0.4661
 ```
 
-The archived `datasets/MIST_HER2/manifest.csv` is a provenance manifest with a different schema; it is not directly a training manifest. Check group identity, choose leakage-safe splits, and convert it before running `prepare`. The example pixel spacing and DAB evaluation threshold should be verified for each dataset.
+`prepare` also accepts the bundled MIST provenance manifest directly. It pairs `trainA/trainB` and `valA/valB` by source prefix and filename, then deterministically repartitions whole prefixes into 80/10/10 train/validation/test groups because the archive's original train/validation image lists share prefixes. This avoids prefix overlap, but source prefixes are not verified patient IDs; do not claim patient-independent results without checking patient metadata. Only training pairs are written to the training cache. The example pixel spacing and DAB evaluation threshold should be verified for each dataset.
 
-## Label-free training
+## Paired training
 
-- **Flow matching** learns IHC appearance using RGB images sampled from the IHC pool. The separate source image condition is zero for this term.
-- **H&E-conditioned generation** uses the same integration grid during training and inference. A stain-neutral morphology encoder compares the input H&E with its generated image. The IHC discriminator compares the generated image with independently sampled real IHC.
-- **Segmentation-free morphology** projects H&E and IHC RGB into canonical hematoxylin structure before matching. A residual CNN with top-down FPN fusion extracts high-resolution local features and three soft compartment weights. The reproducible MIST configuration uses the public, ungated DINOv2-S/14 weights as a frozen dense-token teacher. DAB is never passed to this structure encoder. Hibou-B remains an optional pathology-specific teacher for users who have accepted its gated model terms.
-- **Joint trajectory training** alternates policy and flow updates. The policy samples corrections using the current flow and an appearance/structure reward. The flow then updates on its original objectives plus the reward of a new rollout using the policy mean. Start `--objective ppo` and `--objective direct` from the same flow checkpoint for a matched rollout comparison. The default `flow_reward_weight` is 0.1.
+- **Conditional flow matching** interpolates Gaussian noise and a real paired IHC crop while conditioning on its corresponding H&E crop and marker.
+- **Three-term generator objective** combines paired conditional flow matching, CUT-style PatchNCE, and a pix2pix-style paired PatchGAN objective. PatchNCE uses the same sampled spatial positions as positives and other positions from the same image as negatives; a small projection head adapts the fused morphology features. The PatchGAN sees H&E, IHC, and the marker indicator.
+- **Segmentation-free morphology** projects H&E and IHC RGB into canonical hematoxylin structure before matching. A residual CNN with top-down FPN fusion extracts local features and three heuristic H/edge/context weights. They are not learned cell compartments or segmentation outputs. DAB is not passed to this structure encoder.
+- **Separate policy optimization** uses PPO or a direct objective and a regional DAB support/amount reward computed from the paired IHC. This reward updates the policy only; it is not added again to the generator objective. Start `--objective ppo` and `--objective direct` from the same flow checkpoint for a matched comparison.
 
-The training data consist of RGB images and target stain identity such as HER2. Stain identity selects the IHC domain. Expression grades, annotations and expression masks are absent from training. The DAB map is an optional diagnostic computed from generated RGB. Keep paired references in held-out groups for evaluation. These learning signals establish neither expression status nor cell-level localization, and the new training mode requires real-image validation.
+The implementation is compared with pinned official PyTorch references in [Implementation comparison](docs/IMPLEMENTATION_COMPARISON.md) and [Upstream code and licenses](docs/UPSTREAM.md). TorchCFM is called directly; the local paired PatchNCE and PatchGAN are adaptations of the official CUT and pix2pix designs. The PPO rollout/update code is a task-specific adaptation, not an imported official trainer.
+
+The paired IHC image supplies a DAB proxy map during training; no manual cell masks or expression labels are required. The trajectory reward compares DAB support fraction and amount in `region` windows, which is more tolerant to small section shifts than pixel reward. It still does not guarantee exact cell-level localization: paired serial sections may not have exact cell correspondence, and local registration must be assessed.
 
 ## Setup and run
 
@@ -36,15 +38,13 @@ python -m venv .venv
 # Linux/macOS: source .venv/bin/activate
 # Windows PowerShell: .venv\Scripts\Activate.ps1
 python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
-python -m pip install numpy Pillow scipy POT pytest 'transformers>=4.44,<5' safetensors
+python -m pip install numpy Pillow scipy POT pytest
 python -m pip install --no-deps -e third_party/torchcfm -e third_party/torchdiffeq -e .
-python -m morphoflow_ihc prepare --manifest data/images.csv --config configs/mist.json --output data/cache_rgb
-python -m morphoflow_ihc train --cache data/cache_rgb --config configs/mist.json --output runs/rgb_flow.pt --device cuda
+python -m morphoflow_ihc prepare --manifest datasets/MIST_HER2/manifest.csv --config configs/mist_her2.json --output data/cache_rgb
+python -m morphoflow_ihc train --cache data/cache_rgb --config configs/mist_her2.json --output runs/rgb_flow.pt --device cuda
 python -m morphoflow_ihc train-rl --cache data/cache_rgb --checkpoint runs/rgb_flow.pt --output runs/rgb_rl.pt --device cuda
 python -m morphoflow_ihc infer --checkpoint runs/rgb_flow.pt --image data/he.png --marker HER2 --output prediction.png --maps prediction.npz
 python -m pytest -q
 ```
 
-The default command writes RGB-only training caches (format 3). An old cache (format 2) can still be used if it contains both RGB pools. Training reads only its RGB arrays. Morphology-FPN flow and policy weights require format 5 checkpoints; format 4 checkpoints remain available in Git history but are intentionally rejected by this architecture. The frozen teacher is loaded only during training and is not stored in checkpoints. Start joint training from a base flow checkpoint to initialize all three optimizers. Joint checkpoints save the policy, flow and discriminator optimizer states for resuming.
-
-`morphology_teacher: "none"` and `teacher_weight: 0` provide a lightweight ablation without downloading a foundation model. This changes the training objective and must not be mixed with the formal teacher configuration in one result row. To use Hibou-B instead, set `morphology_teacher` to `histai/hibou-b` and `morphology_teacher_dim` to `768` after obtaining Hugging Face access.
+The command writes paired RGB training caches (format 4); older unpaired caches are rejected. The current generator uses three terms: CFM, PatchNCE, and adversarial loss. Checkpoint format 8 records the paired PatchNCE projection and paired PatchGAN architecture; older checkpoints are rejected. Start joint policy training from a base flow checkpoint to initialize the policy and optimizer state.

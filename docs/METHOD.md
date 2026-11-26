@@ -1,17 +1,29 @@
-# Label-free unpaired RGB flow
+# Paired conditional RGB flow
 
-The flow term fits the target RGB IHC distribution from image samples. For an IHC sample and Gaussian noise, it regresses the velocity along their interpolation. The separate image condition is zero. An independent H&E crop supplies the image condition for a differentiable RGB rollout. The rollout uses the same Euler grid as inference. A morphology objective compares local features of the source H&E and its own generated image. The patch discriminator compares generated RGB with independent real IHC of the selected stain.
+Each training sample is a filename-level H&E/IHC pair. Both crops use the same coordinate. The code rejects missing pair members, mismatched groups/splits, and unequal canonical image dimensions.
 
-## Segmentation-free morphology encoder
+## Generator: three objectives
 
-Both domains are projected into hematoxylin concentration by cancelling the domain's other stain vector: eosin for H&E and DAB for IHC. The local student receives three continuous channels: hematoxylin concentration, Sobel gradient magnitude and absolute Laplacian. Its residual BasicBlocks and top-down FPN produce a dense feature map and three softmax weights interpreted only as latent nuclear-like, boundary-like and contextual compartments. They are not supervised segmentation masks.
+The generator is trained with
 
-The reproducible MIST configuration additionally loads frozen DINOv2-S/14 during training. The teacher sees only a canonical hematoxylin rendering, never the DAB concentration. The student features of independent H&E and real-IHC crops are regularized toward projected teacher tokens, while position contrast is measured between H&E and its generated IHC. These two terms form the morphology objective. The teacher is not part of inference and its parameters are not saved in checkpoints. Hibou-B can replace DINOv2-S/14 only when its separately gated weights are available; that replacement is a distinct experimental configuration.
+\[
+\mathcal L_G=\mathcal L_{\mathrm{CFM}}+\lambda_{\mathrm{NCE}}\mathcal L_{\mathrm{PatchNCE}}+\lambda_{\mathrm{adv}}\mathcal L_{\mathrm{adv}}.
+\]
 
-This construction prevents direct DAB answer leakage into morphology matching under the stated two-stain optical-density model. Real stain variation and imperfect deconvolution can still leave residual leakage, so held-out stain-perturbation checks are required before making biological localization claims.
+- **Conditional flow matching** uses the paired IHC as the endpoint and its corresponding H&E and marker as conditions. The implementation calls TorchCFM's `ConditionalFlowMatcher` and uses its guided-diffusion U-Net.
+- **PatchNCE** follows the official CUT organization: sample shared spatial indices, project local features, treat same-position H&E/generated-IHC features as positives, and other positions within the image as negatives. The adaptation uses stain-neutral morphology FPN features and aligned paired crops; the exact CUT modules remain available as a pinned submodule for side-by-side comparison.
+- **Adversarial loss** follows the paired pix2pix PatchGAN structure. The discriminator receives concatenated H&E, IHC and marker indicator maps. The adaptation uses a marker-conditioned paired discriminator and logistic loss.
 
-Each joint iteration first draws two candidate trajectories from the current flow and samples separate RGB velocity corrections at the action step. The policy observation includes the three morphology compartment weights. A fixed copy in time of the flow and scorers is used for that policy update. PPO and the direct gradient control use the same reward, bounded actions and KL rollback. The flow and discriminator then take a training step. The flow objective combines flow matching, the morphology objective, adversarial realism and a weighted terminal reward from a new rollout with the current policy mean. The reward gradient passes through the Euler steps into the velocity network. The scorer and policy parameters are held fixed for this reward term, while the morphology encoder and discriminator continue to learn from their base objectives. Keeping the flow fixed within the policy update avoids changing the rollout dynamics during PPO's likelihood-ratio calculation. The next policy batch uses the newly updated flow.
+No separate teacher-distillation or generator reward term is included. The configured MIST weights start at `nce_weight=0.1` and `adversarial_weight=0.1`; they require empirical tuning and are not claimed optimal.
 
-The terminal score averages IHC realism and source/output patch similarity. These scores cover appearance and structure, and supply no observed map of expression on the H&E image.
+## Morphology features
 
-Training samples contain RGB and stain identity only. DAB extraction and paired comparison are evaluation operations outside the training path. Paired evaluation at cell resolution requires reliable spatial correspondence.
+Both images are projected into a canonical hematoxylin concentration by cancelling the domain's other stain vector: eosin for H&E and DAB for IHC. A residual CNN/FPN processes H concentration, Sobel magnitude and Laplacian channels. Its three returned weights are fixed soft proxies computed from H concentration and edge strength; they are not biological compartments or segmentation masks. DAB is not an input to this encoder.
+
+## PPO policy
+
+The policy makes one bounded regional velocity correction at a selected flow step. Its separate reward compares generated and paired-reference DAB support and amount over regional windows. PPO updates the policy from this score; the score is not added a second time to the generator loss. Therefore the full model has three generator terms, one discriminator objective, and one policy objective. The reward is still derived from the paired IHC and is not independent biological supervision.
+
+## Data split and limitations
+
+The bundled MIST provenance manifest can be used directly. Since original image-level train/validation lists share source prefixes, the loader deterministically assigns whole prefixes to 80/10/10 train/validation/test sets before caching. This avoids prefix overlap; source prefixes are not verified patient IDs. Filename pairing does not guarantee exact serial-section registration. PatchNCE assumes local spatial correspondence, so registration quality must be assessed before interpreting its positive pairs as cell-level correspondences. The model learns paired-image statistics; it does not establish causal cell-level expression understanding.

@@ -10,3 +10,9 @@
 [submodule "third_party/branchgrpo"]
 	path = third_party/branchgrpo
 	url = https://github.com/Fredreic1849/BranchGRPO.git
+[submodule "third_party/cut"]
+	path = third_party/cut
+	url = https://github.com/taesungp/contrastive-unpaired-translation.git
+[submodule "third_party/pix2pix"]
+	path = third_party/pix2pix
+	url = https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix.git

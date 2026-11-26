@@ -1,4 +1,4 @@
-"""RGB flow, unpaired terminal reward, and one-step group PPO."""
+"""Paired RGB flow reward and one-step group PPO."""
 
 from copy import deepcopy
 import math
@@ -74,27 +74,45 @@ def action_distribution(mean, std):
     return Independent(Normal(mean.float(), std), reinterpreted_batch_ndims=3)
 
 
-def unpaired_reward(model, he, generated, marker, indices):
-    """Rate target-domain realism and spatial content on each candidate."""
-    endpoint = model.critic(generated, marker).sigmoid().flatten(1).mean(1)
-    source = model.morphology(he, "HE")[0].flatten(2).transpose(1, 2)[:, indices]
-    output = model.morphology(generated, "IHC")[0].flatten(2).transpose(1, 2)[:, indices]
-    source = F.normalize(source.float(), dim=-1)
-    output = F.normalize(output.float(), dim=-1)
-    logits = torch.bmm(output, source.transpose(1, 2)) / 0.07
-    labels = torch.arange(len(indices), device=he.device).expand(he.shape[0], -1)
-    xent = F.cross_entropy(logits.flatten(0, 1), labels.reshape(-1), reduction="none").reshape(he.shape[0], -1).mean(1)
-    structure = torch.exp(-xent / max(1.0, math.log(len(indices))))
-    return (0.5 * endpoint + 0.5 * structure).clamp(0, 1)
+def paired_expression_reward(model, generated, reference, marker):
+    """Differentiable regional DAB support/amount reward from paired IHC.
+
+    Regional pooling reduces sensitivity to small serial-section shifts; it
+    does not establish exact cell-wise correspondence.
+    """
+    cfg = model.cfg
+    estimated = rgb_to_dab(generated, cfg)
+    target = rgb_to_dab(reference, cfg).detach()
+    window = cfg.region
+    thresholds = generated.new_tensor(list(cfg.markers.values()))[marker].view(-1, 1, 1, 1)
+    predicted_support = torch.sigmoid((estimated - thresholds) / 0.05)
+    target_support = (target > thresholds).float()
+    predicted_fraction = F.avg_pool2d(predicted_support, window)
+    target_fraction = F.avg_pool2d(target_support, window)
+    # Include empty/background windows so extra DAB outside tissue is penalized.
+    active = target_fraction > 0.01
+
+    def balanced_error(error):
+        positive = (error * active).flatten(1).sum(1) / active.flatten(1).sum(1).clamp_min(1)
+        negative_mask = ~active
+        negative = (error * negative_mask).flatten(1).sum(1) / negative_mask.flatten(1).sum(1).clamp_min(1)
+        has_positive = active.flatten(1).any(1)
+        has_negative = negative_mask.flatten(1).any(1)
+        return torch.where(has_positive & has_negative, 0.5 * (positive + negative),
+                           torch.where(has_positive, positive, negative))
+
+    support_error = balanced_error((predicted_fraction - target_fraction).abs())
+
+    predicted_amount = F.avg_pool2d(estimated, window)
+    target_amount = F.avg_pool2d(target, window)
+    amount_error = balanced_error((predicted_amount - target_amount).abs())
+    amount_score = torch.exp(-amount_error / thresholds.flatten(1)[:, 0].clamp_min(1e-6))
+    support_score = (1 - support_error).clamp(0, 1)
+    weight = cfg.intensity_weight
+    return ((1 - weight) * support_score + weight * amount_score).clamp(0, 1)
 
 
-@torch.no_grad()
-def reward_indices(model, he):
-    height, width = model.morphology(he, "HE")[0].shape[-2:]
-    return torch.randperm(height * width, device=he.device)[:64]
-
-
-def collect(model, policy, he, marker, *, direct=False):
+def collect(model, policy, he, reference, marker, *, direct=False):
     cfg = model.cfg
     noise = torch.randn_like(he)
     times = grid(model, noise)
@@ -107,13 +125,11 @@ def collect(model, policy, he, marker, *, direct=False):
     actions = dist.rsample((2,)) if direct else dist.sample((2,))
     log_prob = dist.log_prob(actions)
     dt = times[k + 1] - times[k]
-    # Share sampled locations between both candidate trajectories.
-    indices = reward_indices(model, he)
     rewards = []
     for action in actions:
         initial = state + dt * corrected_velocity(model, base, action)
         rgb = integrate(model, he, marker, initial, times[k + 1:]).clamp(-1, 1)
-        rewards.append(unpaired_reward(model, he, rgb, marker, indices))
+        rewards.append(paired_expression_reward(model, rgb, reference, marker))
     return observation, mean, actions, log_prob, torch.stack(rewards)
 
 

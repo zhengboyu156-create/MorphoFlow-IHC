@@ -7,8 +7,8 @@ from torchcfm import ConditionalFlowMatcher
 from torchcfm.models.unet.unet import UNetModel
 
 from .config import Config
-from .morphology import (LocalMorphologyFPN, canonical_hematoxylin, cosine_distillation,
-                         morphology_channels, position_nce)
+from .morphology import LocalMorphologyFPN, morphology_channels
+from .patchnce import PatchSampleF, paired_patchnce
 
 
 class StainFlow(nn.Module):
@@ -26,8 +26,7 @@ class StainFlow(nn.Module):
             num_classes=len(cfg.markers),
         )
         self.patch_encoder = LocalMorphologyFPN(cfg.morphology_width, cfg.morphology_channels)
-        self.teacher_projection = (nn.Conv2d(cfg.morphology_teacher_dim, cfg.morphology_channels, 1)
-                                   if cfg.teacher_weight > 0 else None)
+        self.patch_sampler = PatchSampleF(cfg.morphology_channels, cfg.patch_projection_dim)
         self.critic = IHCCritic(len(cfg.markers))
         self.matcher = ConditionalFlowMatcher(sigma=0.0)
 
@@ -38,28 +37,20 @@ class StainFlow(nn.Module):
     def morphology(self, image, domain):
         return self.patch_encoder(morphology_channels(image, self.cfg, domain))
 
-    def morphology_loss(self, he, generated, image, teacher=None):
+    def morphology_loss(self, he, generated):
         source, _ = self.morphology(he, "HE")
         output, _ = self.morphology(generated, "IHC")
-        loss = position_nce(source, output)
-        if teacher is None or self.cfg.teacher_weight == 0:
-            return loss
-        if teacher.output_channels != self.cfg.morphology_teacher_dim:
-            raise ValueError("Configured morphology_teacher_dim does not match the loaded teacher")
-        real_ihc, _ = self.morphology(image, "IHC")
-        canonical = torch.cat((canonical_hematoxylin(he, self.cfg, "HE"),
-                               canonical_hematoxylin(image, self.cfg, "IHC")))
-        target = self.teacher_projection(teacher(canonical))
-        target_he, target_ihc = target.chunk(2)
-        distillation = 0.5 * (cosine_distillation(source, target_he.detach())
-                              + cosine_distillation(real_ihc, target_ihc.detach()))
-        return loss + self.cfg.teacher_weight * distillation
+        return paired_patchnce(source, output, self.patch_sampler,
+                               patches=self.cfg.nce_patches,
+                               temperature=self.cfg.nce_temperature)
 
-    def losses(self, image, he, marker, teacher=None):
+    def losses(self, image, he, marker):
         t, z, target_velocity = self.matcher.sample_location_and_conditional_flow(
             torch.randn_like(image), image
         )
-        prediction = self.velocity(t, z, torch.zeros_like(image), marker)
+        # Paired conditional flow matching: the H&E crop and its aligned IHC
+        # target define one conditional transport problem.
+        prediction = self.velocity(t, z, he, marker)
         flow_loss = F.mse_loss(prediction, target_velocity)
 
         # Train the H&E path using the same grid used for generation and policy rollout.
@@ -69,25 +60,41 @@ class StainFlow(nn.Module):
             step_t = torch.full((he.shape[0],), i / steps, device=he.device)
             state = state + self.velocity(step_t, state, he, marker) / steps
         generated = state.clamp(-1, 1)
-        return flow_loss, self.morphology_loss(he, generated, image, teacher), generated
+        return flow_loss, self.morphology_loss(he, generated), generated
 
 
 class IHCCritic(nn.Module):
-    """Marker-conditioned patch discriminator for unpaired IHC realism."""
-    def __init__(self, markers):
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(3, 32, 3, stride=2, padding=1), nn.LeakyReLU(0.2),
-            nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.LeakyReLU(0.2),
-            nn.Conv2d(64, 128, 3, stride=2, padding=1), nn.LeakyReLU(0.2),
-        )
-        self.score = nn.Conv2d(128, 1, 1)
-        self.marker = nn.Embedding(markers, 128)
+    """Marker-conditioned paired PatchGAN adapted from official pix2pix."""
 
-    def forward(self, image, marker):
-        features = self.features(image.float())
-        projection = (features * self.marker(marker)[:,:,None,None]).sum(1, keepdim=True) / (128 ** 0.5)
-        return self.score(features) + projection
+    def __init__(self, markers: int, base_channels: int = 32, layers: int = 3):
+        super().__init__()
+        self.markers = markers
+        input_channels = 6 + markers  # paired H&E/IHC plus a marker indicator map
+        sequence = [nn.Conv2d(input_channels, base_channels, 4, stride=2, padding=1),
+                    nn.LeakyReLU(0.2, inplace=True)]
+        nf_mult = 1
+        for layer in range(1, layers):
+            nf_mult_previous = nf_mult
+            nf_mult = min(2 ** layer, 8)
+            sequence.extend((nn.Conv2d(base_channels * nf_mult_previous, base_channels * nf_mult,
+                                       4, stride=2, padding=1, bias=False),
+                             nn.BatchNorm2d(base_channels * nf_mult),
+                             nn.LeakyReLU(0.2, inplace=True)))
+        nf_mult_previous = nf_mult
+        nf_mult = min(2 ** layers, 8)
+        sequence.extend((nn.Conv2d(base_channels * nf_mult_previous, base_channels * nf_mult,
+                                   4, stride=1, padding=1, bias=False),
+                         nn.BatchNorm2d(base_channels * nf_mult),
+                         nn.LeakyReLU(0.2, inplace=True),
+                         nn.Conv2d(base_channels * nf_mult, 1, 4, stride=1, padding=1)))
+        self.model = nn.Sequential(*sequence)
+
+    def forward(self, image, he, marker):
+        if image.shape != he.shape:
+            raise ValueError("Paired H&E and IHC critic inputs must have identical shapes")
+        marker_map = F.one_hot(marker, num_classes=self.markers).to(image.dtype)
+        marker_map = marker_map[:, :, None, None].expand(-1, -1, *image.shape[-2:])
+        return self.model(torch.cat((he.float(), image.float(), marker_map.float()), dim=1))
 
 
 class VelocityPolicy(nn.Module):

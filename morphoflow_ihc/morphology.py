@@ -42,13 +42,6 @@ def hematoxylin_map(image: torch.Tensor, cfg, domain: str) -> torch.Tensor:
     return torch.einsum("c,bchw->bhw", projection, optical_density)[:, None].div(denominator).clamp_min(0)
 
 
-def canonical_hematoxylin(image: torch.Tensor, cfg, domain: str) -> torch.Tensor:
-    """Render a canonical three-channel hematoxylin-only structure image."""
-    concentration = hematoxylin_map(image, cfg, domain)
-    h = _unit(image, cfg.stain_h)[None, :, None, None]
-    return (2 * torch.exp(-concentration * h) - 1).clamp(-1, 1)
-
-
 def morphology_channels(image: torch.Tensor, cfg, domain: str) -> torch.Tensor:
     """Return H concentration, gradient magnitude and Laplacian channels."""
     h = hematoxylin_map(image, cfg, domain)
@@ -84,7 +77,7 @@ class BasicBlock(nn.Module):
 
 
 class LocalMorphologyFPN(nn.Module):
-    """High-resolution residual pyramid and soft compartment probabilities."""
+    """High-resolution residual pyramid and heuristic morphology weights."""
 
     def __init__(self, width: int = 32, output_channels: int = 64):
         super().__init__()
@@ -113,63 +106,7 @@ class LocalMorphologyFPN(nn.Module):
                    for layer, value in zip(self.smooth, (p1, p2, p3))]
         features = self.fuse(torch.cat(pyramid, dim=1))
         local = F.adaptive_avg_pool2d(structure[:, :2], target)
-        nuclear, boundary = local[:, :1], local[:, 1:2]
-        context = -(nuclear + boundary)
-        return features, torch.cat((nuclear, boundary, context), dim=1).softmax(1)
-
-
-class DenseTokenTeacher:
-    """Non-checkpointed frozen Hugging Face dense-token teacher.
-
-    The optional Transformers dependency and model weights are loaded only for
-    formal training configurations that request a teacher.
-    """
-
-    def __init__(self, model_name: str, device, input_size: int = 224):
-        try:
-            from transformers import AutoImageProcessor, AutoModel
-        except ImportError as error:
-            raise RuntimeError("Install morphoflow-ihc[foundation] to use a morphology teacher") from error
-        self.processor = AutoImageProcessor.from_pretrained(model_name, trust_remote_code=True)
-        self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(device).eval()
-        self.model.requires_grad_(False)
-        self.input_size = input_size
-        self.output_channels = int(self.model.config.hidden_size)
-
-    @torch.no_grad()
-    def __call__(self, canonical: torch.Tensor) -> torch.Tensor:
-        size = self.input_size
-        pixels = F.interpolate((canonical.float() + 1) / 2, (size, size), mode="bilinear", align_corners=False)
-        mean = pixels.new_tensor(self.processor.image_mean)[None, :, None, None]
-        std = pixels.new_tensor(self.processor.image_std)[None, :, None, None]
-        tokens = self.model(pixel_values=(pixels - mean) / std).last_hidden_state
-        patch = int(getattr(self.model.config, "patch_size", 14))
-        rows = cols = size // patch
-        count = rows * cols
-        if tokens.shape[1] < count:
-            raise RuntimeError("Teacher output contains fewer tokens than its patch grid")
-        return tokens[:, -count:].transpose(1, 2).reshape(tokens.shape[0], -1, rows, cols).float()
-
-
-def build_teacher(cfg, device):
-    if cfg.morphology_teacher.lower() == "none" or cfg.teacher_weight == 0:
-        return None
-    return DenseTokenTeacher(cfg.morphology_teacher, device, cfg.teacher_input_size)
-
-
-def position_nce(source: torch.Tensor, generated: torch.Tensor, patches: int = 64,
-                 temperature: float = 0.07) -> torch.Tensor:
-    source = source.flatten(2).transpose(1, 2)
-    generated = generated.flatten(2).transpose(1, 2)
-    count = min(patches, source.shape[1])
-    indices = torch.randperm(source.shape[1], device=source.device)[:count]
-    source = F.normalize(source[:, indices], dim=-1)
-    generated = F.normalize(generated[:, indices], dim=-1)
-    logits = torch.bmm(generated, source.transpose(1, 2)) / temperature
-    target = torch.arange(count, device=source.device).expand(source.shape[0], -1)
-    return F.cross_entropy(logits.reshape(-1, count), target.reshape(-1))
-
-
-def cosine_distillation(student: torch.Tensor, teacher: torch.Tensor) -> torch.Tensor:
-    teacher = F.interpolate(teacher, student.shape[-2:], mode="bilinear", align_corners=False)
-    return 1 - F.cosine_similarity(student.float(), teacher.float(), dim=1).mean()
+        hematoxylin_level, edge_level = local[:, :1], local[:, 1:2]
+        residual_context = -(hematoxylin_level + edge_level)
+        weights = torch.cat((hematoxylin_level, edge_level, residual_context), dim=1).softmax(1)
+        return features, weights

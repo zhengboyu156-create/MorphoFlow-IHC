@@ -19,14 +19,12 @@ class Config:
     residual_blocks: int = 1
     ode_steps: int = 8
     action_step: int = 4
-    nce_steps: int = 2
     nce_weight: float = 0.1
     morphology_width: int = 32
     morphology_channels: int = 64
-    morphology_teacher: str = "none"
-    morphology_teacher_dim: int = 768
-    teacher_input_size: int = 224
-    teacher_weight: float = 0.0
+    patch_projection_dim: int = 128
+    nce_patches: int = 64
+    nce_temperature: float = 0.07
     adversarial_weight: float = 0.1
     critic_lr: float = 0.0002
     advantage_scale: float = 0.01
@@ -34,7 +32,6 @@ class Config:
     stain_h: tuple[float, ...] = (0.650, 0.704, 0.286)
     stain_e: tuple[float, ...] = (0.072, 0.990, 0.105)
     stain_d: tuple[float, ...] = (0.268, 0.570, 0.776)
-    h_scale: float = 1.0
     intensity_weight: float = 0.20
     action_std: float = 0.20
     velocity_limit: float = 0.10
@@ -42,7 +39,6 @@ class Config:
     kl_limit: float = 0.02
     flow_lr: float = 0.0002
     rl_lr: float = 0.00001
-    flow_reward_weight: float = 0.1
 
     def __post_init__(self):
         canonical = {key.upper(): float(value) for key, value in self.markers.items()}
@@ -62,28 +58,22 @@ class Config:
             raise ValueError("context must span multiple region cells")
         if not 0 <= self.overlap < self.crop:
             raise ValueError("overlap must be smaller than crop")
-        if self.nce_steps < 1 or not math.isfinite(self.nce_weight) or self.nce_weight < 0:
-            raise ValueError("PatchNCE steps must be positive and weight nonnegative")
+        if not math.isfinite(self.nce_weight) or self.nce_weight < 0:
+            raise ValueError("PatchNCE weight must be finite and nonnegative")
         if self.morphology_width < 8 or self.morphology_channels < 8:
             raise ValueError("Morphology FPN widths must be at least 8")
-        if self.morphology_teacher_dim < 1 or self.teacher_input_size < 28:
-            raise ValueError("Invalid morphology teacher shape")
-        if not isinstance(self.morphology_teacher, str) or not self.morphology_teacher:
-            raise ValueError("morphology_teacher must be a model name or 'none'")
-        if not math.isfinite(self.teacher_weight) or self.teacher_weight < 0:
-            raise ValueError("teacher_weight must be finite and nonnegative")
-        if self.teacher_weight > 0 and self.morphology_teacher.lower() == "none":
-            raise ValueError("A positive teacher_weight requires a morphology_teacher")
+        if self.patch_projection_dim < 8 or self.nce_patches < 2:
+            raise ValueError("Patch projection and sample count must be at least 8 and 2")
+        if not math.isfinite(self.nce_temperature) or self.nce_temperature <= 0:
+            raise ValueError("PatchNCE temperature must be finite and positive")
         if not 0 <= self.action_step < self.ode_steps or self.ode_steps < 2:
             raise ValueError("action_step is zero-based and must index the Euler grid")
-        positive = (self.pixel_size_um, self.h_scale, self.tissue_od,
+        positive = (self.pixel_size_um, self.tissue_od,
                     self.action_std, self.velocity_limit, self.kl_limit, self.flow_lr, self.rl_lr,
                     self.adversarial_weight, self.critic_lr, self.advantage_scale,
                     *self.markers.values())
         if any(not math.isfinite(value) or value <= 0 for value in positive):
             raise ValueError("Physical and optimization scales must be finite and positive")
-        if not math.isfinite(self.flow_reward_weight) or self.flow_reward_weight < 0:
-            raise ValueError("Flow reward weight must be finite and nonnegative")
         if not 0 <= self.intensity_weight <= 1 or not 0 < self.ppo_clip < 1:
             raise ValueError("Invalid reward or PPO weight")
         for name in ("stain_h", "stain_e", "stain_d"):
