@@ -85,7 +85,7 @@ python -m pytest -q tests/test_pipeline.py -k "patchnce or paired_reward_gradien
 
 ### 策略更新检查
 
-策略从流模型 checkpoint 启动，先跑少量 PPO 组，确认日志中的 `reward`、`spread`、`accepted`、`kl` 全部有限；候选动作奖励差异不能全为零，KL 不得超过配置上限。对同一 H&E、同一 seed 分别用基础流 checkpoint 和策略 checkpoint 推理，确认策略确实改变了 RGB 输出；若短程内输出差异仍为零，应检查 PPO 更新是否被拒绝、速度场 RMS 是否接近零、动作是否饱和或被裁剪。策略变化本身不代表质量改善，仍需看验证指标。
+策略从流模型 checkpoint 启动，先跑少量 PPO 组，确认日志中的 `reward`、`spread`、`spread_median`、`signal_fraction`、`candidate0_win_rate`、`accepted`、`kl` 全部有限。当前 PPO 对每张图的两条候选轨迹做组内标准化；差值低于配置 `min_reward_spread`（默认 `1e-5`）的样本不参与策略更新，避免把微小数值差异放大成完整优势。若 `signal_fraction` 长期很低，不能通过调低门槛来“制造”训练信号；应先在验证集检查动作探索幅度、奖励对区域误差的排序，以及配对错位对奖励的影响。对同一 H&E、同一 seed 分别用基础流 checkpoint 和策略 checkpoint 推理，确认策略确实改变了 RGB 输出；策略变化本身不代表质量改善，仍需看验证指标。
 
 再做一次小型匹配比较：从同一个 `flow.pt` 出发，普通流模型继续 8 次更新；策略模型进行 8 个样本组更新（每组包含两条候选轨迹）。两边使用同一训练/验证划分、seed、batch 和配置，分别在同一固定验证子集上计算区域支持比例误差、局部 DAB 量误差并保存配对图。它不是正式消融结论，只用于发现策略是否明显拉坏生成器或奖励与评价目标反向；如果短程结果噪声很大，记录为“未决”，不要据此选最佳配置。
 
@@ -116,7 +116,7 @@ python -m morphoflow_ihc train-rl \
 
 若要试 batch 2，另建独立预实验目录，连续跑至少 100 次实际更新并记录峰值显存；不要仅凭一次前向或短暂 GPU 利用率决定正式 batch。正式消融要保持更新次数、样本暴露量、训练计划和 seed 一致；batch 不同会改变每次更新的梯度估计与优化轨迹，若确需混用，需作为配置差异报告并做敏感性检查。
 
-记录：每步耗时、样本/秒、峰值显存、三项生成器损失、critic 损失、PPO reward/spread/KL/accepted 次数、梯度裁剪是否触发、checkpoint 是否能重载。10 步 smoke test 只验证管线和显存启动，不代表稳定收敛；放行前建议再跑至少数百次更新，检查滑动窗口损失、验证集指标及生成图是否持续出现模式崩塌、颜色漂移、过量/缺失 DAB 或 tile 接缝。
+记录：每步耗时、样本/秒、峰值显存、三项生成器损失、critic 损失、PPO reward/spread/median spread/signal fraction/candidate-0 胜率/KL/accepted 次数、梯度裁剪是否触发、checkpoint 是否能重载。10 步 smoke test 只验证管线和显存启动，不代表稳定收敛；放行前建议再跑至少数百次更新，检查滑动窗口损失、验证集指标及生成图是否持续出现模式崩塌、颜色漂移、过量/缺失 DAB 或 tile 接缝。
 
 ## 6. 推理与评价小检查
 
