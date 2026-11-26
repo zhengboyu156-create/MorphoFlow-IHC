@@ -311,6 +311,38 @@ def test_paired_reward_gradient_reaches_flow():
 
 
 
+def test_policy_guides_generator_rollout_without_being_updated_by_generator_step():
+    from morphoflow_ihc.engine import flow_optimizers, flow_update
+    from morphoflow_ihc.model import StainFlow
+
+    torch.set_num_threads(2)
+    torch.manual_seed(51)
+    cfg = Config(markers={"HER2": 0.35}, crop=32, region=8, context=16, overlap=8,
+                 channel_mult=(1, 1), ode_steps=2, action_step=0,
+                 morphology_width=8, morphology_channels=8,
+                 patch_projection_dim=8, nce_patches=4)
+    model, policy = StainFlow(cfg), VelocityPolicy(cfg)
+    with torch.no_grad():
+        policy.net[-1].bias.fill_(0.5)
+    image = torch.rand(1, 3, 32, 32).mul(2).sub(1)
+    he = torch.rand_like(image).mul(2).sub(1)
+    marker = torch.zeros(1, dtype=torch.long)
+    torch.manual_seed(77)
+    _, _, base = model.losses(image, he, marker)
+    torch.manual_seed(77)
+    _, _, guided = model.losses(image, he, marker, policy=policy)
+    assert not torch.allclose(base, guided)
+
+    generator_optimizer, critic_optimizer = flow_optimizers(model)
+    generator_parameter = next(model.net.parameters())
+    generator_before = generator_parameter.detach().clone()
+    policy_before = {name: value.detach().clone() for name, value in policy.state_dict().items()}
+    flow_update(model, generator_optimizer, critic_optimizer, image, he, marker, policy=policy)
+    assert not torch.equal(generator_before, generator_parameter)
+    assert all(torch.equal(value, policy.state_dict()[name]) for name, value in policy_before.items())
+    assert all(parameter.requires_grad for parameter in policy.parameters())
+
+
 def test_cut_style_patchnce_uses_shared_positive_positions_and_gradients():
     from morphoflow_ihc.patchnce import PatchNCELoss, PatchSampleF
 

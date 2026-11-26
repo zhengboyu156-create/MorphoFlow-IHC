@@ -16,8 +16,7 @@ from .config import Config
 from .data import IHCCrops, atomic_write
 from .model import StainFlow, VelocityPolicy
 from .stains import canonical_size, decompose
-from .trajectory import (collect, direct_policy_update, paired_expression_reward, policy_update,
-                         sample_rgb, terminal_reward)
+from .trajectory import collect, direct_policy_update, policy_update, sample_rgb, terminal_reward
 
 
 def choose_device(name):
@@ -80,34 +79,46 @@ def flow_optimizers(model):
             torch.optim.AdamW(model.critic.parameters(), lr=model.cfg.critic_lr))
 
 
-def flow_update(model, optimizer, critic_optimizer, image, he, marker):
+def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=None):
     cfg = model.cfg
     optimizer.zero_grad(set_to_none=True)
     critic_optimizer.zero_grad(set_to_none=True)
-    with precision(he.device):
-        flow_loss, nce_loss, fake = model.losses(image, he, marker)
-        critic_loss = 0.5 * (F.softplus(-model.critic(image, he, marker)).mean()
-                             + F.softplus(model.critic(fake.detach(), he, marker)).mean())
-    if not torch.isfinite(critic_loss):
-        raise FloatingPointError("Nonfinite critic loss")
-    critic_loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.critic.parameters(), 1.0, error_if_nonfinite=True)
-    critic_optimizer.step()
-    critic_optimizer.zero_grad(set_to_none=True)
-
-    model.critic.requires_grad_(False)
+    policy_grad_state = [p.requires_grad for p in policy.parameters()] if policy is not None else None
+    if policy is not None:
+        # The policy is optimized by PPO/direct updates; here its action is a
+        # fixed controller, while gradients still pass through its inputs to G.
+        for parameter in policy.parameters():
+            parameter.grad = None
+        policy.requires_grad_(False)
     try:
         with precision(he.device):
-            adversarial_loss = F.softplus(-model.critic(fake, he, marker)).mean()
-            loss = flow_loss + cfg.nce_weight * nce_loss + cfg.adversarial_weight * adversarial_loss
-        if not torch.isfinite(loss):
-            raise FloatingPointError("Nonfinite flow training loss")
-        loss.backward()
-        parameters = [param for group in optimizer.param_groups for param in group["params"]]
-        torch.nn.utils.clip_grad_norm_(parameters, 1.0, error_if_nonfinite=True)
-        optimizer.step()
+            flow_loss, nce_loss, fake = model.losses(image, he, marker, policy=policy)
+            critic_loss = 0.5 * (F.softplus(-model.critic(image, he, marker)).mean()
+                                 + F.softplus(model.critic(fake.detach(), he, marker)).mean())
+        if not torch.isfinite(critic_loss):
+            raise FloatingPointError("Nonfinite critic loss")
+        critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.critic.parameters(), 1.0, error_if_nonfinite=True)
+        critic_optimizer.step()
+        critic_optimizer.zero_grad(set_to_none=True)
+
+        model.critic.requires_grad_(False)
+        try:
+            with precision(he.device):
+                adversarial_loss = F.softplus(-model.critic(fake, he, marker)).mean()
+                loss = flow_loss + cfg.nce_weight * nce_loss + cfg.adversarial_weight * adversarial_loss
+            if not torch.isfinite(loss):
+                raise FloatingPointError("Nonfinite flow training loss")
+            loss.backward()
+            parameters = [param for group in optimizer.param_groups for param in group["params"]]
+            torch.nn.utils.clip_grad_norm_(parameters, 1.0, error_if_nonfinite=True)
+            optimizer.step()
+        finally:
+            model.critic.requires_grad_(True)
     finally:
-        model.critic.requires_grad_(True)
+        if policy is not None:
+            for parameter, requires_grad in zip(policy.parameters(), policy_grad_state):
+                parameter.requires_grad_(requires_grad)
     stats = {"flow_loss": flow_loss.item(), "nce_loss": nce_loss.item(),
              "critic_loss": critic_loss.item(), "adversarial_loss": adversarial_loss.item()}
     return stats
@@ -192,7 +203,7 @@ def train_policy(args):
             stats = update(policy, optimizer, experience, cfg)
         finally:
             model.train().requires_grad_(True)
-        stats.update(flow_update(model, flow_optimizer, critic_optimizer, image, he, marker))
+        stats.update(flow_update(model, flow_optimizer, critic_optimizer, image, he, marker, policy=policy))
         stats["objective"] = objective
         groups += he.shape[0]
         if groups >= next_save or groups == args.groups or groups == he.shape[0]:

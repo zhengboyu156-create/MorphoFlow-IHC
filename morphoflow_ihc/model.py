@@ -44,22 +44,20 @@ class StainFlow(nn.Module):
                                patches=self.cfg.nce_patches,
                                temperature=self.cfg.nce_temperature)
 
-    def losses(self, image, he, marker):
+    def losses(self, image, he, marker, policy=None):
         t, z, target_velocity = self.matcher.sample_location_and_conditional_flow(
             torch.randn_like(image), image
         )
-        # Paired conditional flow matching: the H&E crop and its aligned IHC
-        # target define one conditional transport problem.
+        # Paired conditional flow matching: the H&E crop conditions transport
+        # to its filename-paired IHC target. Pair IDs alone do not certify
+        # pixel registration.
         prediction = self.velocity(t, z, he, marker)
         flow_loss = F.mse_loss(prediction, target_velocity)
 
-        # Train the H&E path using the same grid used for generation and policy rollout.
-        state = torch.randn_like(he)
-        steps = self.cfg.ode_steps
-        for i in range(steps):
-            step_t = torch.full((he.shape[0],), i / steps, device=he.device)
-            state = state + self.velocity(step_t, state, he, marker) / steps
-        generated = state.clamp(-1, 1)
+        # Use the exact inference/rollout integrator so the policy-corrected
+        # path used by PatchNCE and the critic is the path used at deployment.
+        from .trajectory import sample_rgb
+        generated = sample_rgb(self, he, marker, torch.randn_like(he), policy)
         return flow_loss, self.morphology_loss(he, generated), generated
 
 
