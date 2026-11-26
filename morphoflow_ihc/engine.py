@@ -52,7 +52,11 @@ def open_checkpoint(path, device):
     state = torch.load(path, map_location=device, weights_only=True)
     if state.get("format") != 8 or state.get("stage") not in {"flow", "rl"}:
         raise ValueError("This checkpoint predates paired PatchNCE/PatchGAN training. Train a new format 8 checkpoint")
-    model = StainFlow(Config(**state["config"])).to(device)
+    # Checkpoints written before group-normalized PPO stored a fixed
+    # `advantage_scale`; it is obsolete under the current reward-signal gate.
+    config = dict(state["config"])
+    config.pop("advantage_scale", None)
+    model = StainFlow(Config(**config)).to(device)
     model.load_state_dict(state["model"])
     policy = None
     if state["stage"] == "rl":
@@ -162,8 +166,6 @@ def train_policy(args):
     torch.manual_seed(args.seed)
     model, policy, state = open_checkpoint(args.checkpoint, device)
     cfg = model.cfg
-    if args.advantage_scale is not None:
-        cfg.advantage_scale = args.advantage_scale
     if args.policy_lr is not None:
         cfg.rl_lr = args.policy_lr
     flow_optimizer, critic_optimizer = flow_optimizers(model)
