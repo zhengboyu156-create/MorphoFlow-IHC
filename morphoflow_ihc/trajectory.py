@@ -141,11 +141,34 @@ def action_kl(policy, observation, old_mean, cfg):
         return (delta.square() / (2 * cfg.action_std ** 2)).flatten(1).sum(1).mean()
 
 
+def reward_group_stats(rewards, cfg):
+    """Summarize the two-candidate reward signal and flag near-ties."""
+    if rewards.ndim != 2 or rewards.shape[0] != 2:
+        raise ValueError("Policy updates require two candidate rewards per sample")
+    if not torch.isfinite(rewards).all():
+        raise FloatingPointError("Nonfinite trajectory reward")
+    spread = (rewards[0] - rewards[1]).abs()
+    informative = spread >= cfg.min_reward_spread
+    wins = (rewards[0] > rewards[1]).float() + 0.5 * (rewards[0] == rewards[1]).float()
+    return informative, {
+        "reward": rewards.mean().item(),
+        "spread": spread.mean().item(),
+        "spread_median": spread.median().item(),
+        "signal_fraction": informative.float().mean().item(),
+        "candidate0_win_rate": wins.mean().item(),
+    }
+
+
 def direct_policy_update(policy, optimizer, experience, cfg):
     observation, old_mean, _, _, rewards = experience
+    informative, stats = reward_group_stats(rewards, cfg)
+    stats.update({"accepted": 0, "policy_loss": 0.0, "kl": 0.0})
+    if not informative.any():
+        return stats
     snapshot = deepcopy(policy.state_dict()), deepcopy(optimizer.state_dict())
     optimizer.zero_grad(set_to_none=True)
-    loss = -rewards.mean()
+    mask = informative.to(rewards.dtype).unsqueeze(0)
+    loss = -(rewards * mask).sum() / mask.expand_as(rewards).sum().clamp_min(1)
     if not torch.isfinite(loss):
         raise FloatingPointError("Nonfinite direct policy loss")
     loss.backward()
@@ -156,19 +179,22 @@ def direct_policy_update(policy, optimizer, experience, cfg):
     if not accepted:
         policy.load_state_dict(snapshot[0])
         optimizer.load_state_dict(snapshot[1])
-    return {"reward": rewards.mean().item(), "spread": (rewards[0] - rewards[1]).abs().mean().item(),
-            "accepted": int(accepted), "policy_loss": loss.item(), "kl": kl.item()}
+    stats.update({"accepted": int(accepted), "policy_loss": loss.item(), "kl": kl.item()})
+    return stats
 
 
 def policy_update(policy, optimizer, experience, cfg, passes=2):
     observation, old_mean, actions, old_log_prob, rewards = experience
+    informative, stats = reward_group_stats(rewards, cfg)
+    stats.update({"accepted": 0, "policy_loss": 0.0, "kl": 0.0})
+    # Group-standardize each sample's two candidate returns. The minimum
+    # spread gate prevents tiny numerical differences from becoming unit
+    # advantages and driving a noisy policy update.
     advantage = rewards - rewards.mean(dim=0, keepdim=True)
-    stats = {"reward": rewards.mean().item(), "spread": (rewards[0] - rewards[1]).abs().mean().item(),
-             "accepted": 0, "policy_loss": 0.0, "kl": 0.0}
-    # Ignore numerical ties in the FP32 terminal score.
-    advantage = torch.where(advantage.abs() > 1e-6, advantage, 0.0)
-    advantage = (advantage / cfg.advantage_scale).clamp(-1, 1)
-    if not advantage.abs().any():
+    group_std = rewards.std(dim=0, unbiased=False).clamp_min(cfg.min_reward_spread)
+    advantage = (advantage / group_std.unsqueeze(0)).clamp(-1, 1)
+    advantage = torch.where(informative.unsqueeze(0), advantage, 0.0)
+    if not informative.any():
         return stats
     for _ in range(passes):
         # Revert optimizer moments as well as the weights if a step exceeds the budget.
