@@ -27,7 +27,6 @@ class Config:
     nce_temperature: float = 0.07
     adversarial_weight: float = 0.1
     critic_lr: float = 0.0002
-    advantage_scale: float = 0.01  # legacy checkpoint compatibility; unused by group-normalized PPO
     tissue_od: float = 0.10
     stain_h: tuple[float, ...] = (0.650, 0.704, 0.286)
     stain_e: tuple[float, ...] = (0.072, 0.990, 0.105)
@@ -74,7 +73,7 @@ class Config:
                     self.action_std, self.velocity_limit, self.velocity_rms_floor,
                     self.min_reward_spread,
                     self.kl_limit, self.flow_lr, self.rl_lr,
-                    self.adversarial_weight, self.critic_lr, self.advantage_scale,
+                    self.adversarial_weight, self.critic_lr,
                     *self.markers.values())
         if any(not math.isfinite(value) or value <= 0 for value in positive):
             raise ValueError("Physical and optimization scales must be finite and positive")
