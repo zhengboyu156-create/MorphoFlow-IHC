@@ -29,6 +29,8 @@ The implementation is compared with pinned official PyTorch references in [Imple
 
 See the [logic audit](docs/LOGIC_AUDIT_20261126.md) for the verified train/update flow and the remaining pair-registration and supervision limitations.
 
+Before a full run, follow the [pretraining preflight checklist](docs/PREFLIGHT_BEFORE_FORMAL_TRAINING_20261126.md): environment and data checks, loss/gradient tests, reward and policy checks, CUDA smoke training, and inference validation.
+
 The paired IHC image supplies a DAB proxy map during training; no manual cell masks or expression labels are required. The trajectory reward compares DAB support fraction and amount in `region` windows, which is more tolerant to small section shifts than pixel reward. It still does not guarantee exact cell-level localization: paired serial sections may not have exact cell correspondence, and local registration must be assessed.
 
 ## Setup and run
