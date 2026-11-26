@@ -50,9 +50,11 @@ def integrate(model, h, marker, state, times):
 
 
 def corrected_velocity(model, base, action):
+    # Keep policy control alive when a cold-start flow has near-zero velocity.
     # Positive bilinear weights preserve an L-infinity bound at each pixel.
     rms = torch.linalg.vector_norm(base, dim=(1, 2, 3), keepdim=True) / math.sqrt(base[0].numel())
-    residual = model.cfg.velocity_limit * rms * F.interpolate(action.tanh(), size=base.shape[-2:], mode="bilinear", align_corners=False)
+    scale = rms.clamp_min(model.cfg.velocity_rms_floor)
+    residual = model.cfg.velocity_limit * scale * F.interpolate(action.tanh(), size=base.shape[-2:], mode="bilinear", align_corners=False)
     return base + residual
 
 

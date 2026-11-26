@@ -35,6 +35,7 @@ class Config:
     intensity_weight: float = 0.20
     action_std: float = 0.20
     velocity_limit: float = 0.10
+    velocity_rms_floor: float = 0.05
     ppo_clip: float = 0.15
     kl_limit: float = 0.02
     flow_lr: float = 0.0002
@@ -69,7 +70,8 @@ class Config:
         if not 0 <= self.action_step < self.ode_steps or self.ode_steps < 2:
             raise ValueError("action_step is zero-based and must index the Euler grid")
         positive = (self.pixel_size_um, self.tissue_od,
-                    self.action_std, self.velocity_limit, self.kl_limit, self.flow_lr, self.rl_lr,
+                    self.action_std, self.velocity_limit, self.velocity_rms_floor,
+                    self.kl_limit, self.flow_lr, self.rl_lr,
                     self.adversarial_weight, self.critic_lr, self.advantage_scale,
                     *self.markers.values())
         if any(not math.isfinite(value) or value <= 0 for value in positive):

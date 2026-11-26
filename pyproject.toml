@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Paired morphology-conditioned flow matching and trajectory optimization for virtual IHC"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = { text = "MIT" }
 dependencies = ["numpy>=1.24", "Pillow>=10", "torch>=2.7,<3", "torchcfm>=1.0,<2", "torchdiffeq>=0.2.5,<0.3"]
 
 [project.optional-dependencies]
