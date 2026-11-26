@@ -19,24 +19,27 @@ class Config:
     residual_blocks: int = 1
     ode_steps: int = 8
     action_step: int = 4
-    nce_steps: int = 2
     nce_weight: float = 0.1
+    morphology_width: int = 32
+    morphology_channels: int = 64
+    patch_projection_dim: int = 128
+    nce_patches: int = 64
+    nce_temperature: float = 0.07
     adversarial_weight: float = 0.1
     critic_lr: float = 0.0002
-    advantage_scale: float = 0.01
     tissue_od: float = 0.10
     stain_h: tuple[float, ...] = (0.650, 0.704, 0.286)
     stain_e: tuple[float, ...] = (0.072, 0.990, 0.105)
     stain_d: tuple[float, ...] = (0.268, 0.570, 0.776)
-    h_scale: float = 1.0
     intensity_weight: float = 0.20
     action_std: float = 0.20
     velocity_limit: float = 0.10
+    velocity_rms_floor: float = 0.05
+    min_reward_spread: float = 1e-5
     ppo_clip: float = 0.15
     kl_limit: float = 0.02
     flow_lr: float = 0.0002
     rl_lr: float = 0.00001
-    flow_reward_weight: float = 0.1
 
     def __post_init__(self):
         canonical = {key.upper(): float(value) for key, value in self.markers.items()}
@@ -56,18 +59,24 @@ class Config:
             raise ValueError("context must span multiple region cells")
         if not 0 <= self.overlap < self.crop:
             raise ValueError("overlap must be smaller than crop")
-        if self.nce_steps < 1 or not math.isfinite(self.nce_weight) or self.nce_weight < 0:
-            raise ValueError("PatchNCE steps must be positive and weight nonnegative")
+        if not math.isfinite(self.nce_weight) or self.nce_weight < 0:
+            raise ValueError("PatchNCE weight must be finite and nonnegative")
+        if self.morphology_width < 8 or self.morphology_channels < 8:
+            raise ValueError("Morphology FPN widths must be at least 8")
+        if self.patch_projection_dim < 8 or self.nce_patches < 2:
+            raise ValueError("Patch projection and sample count must be at least 8 and 2")
+        if not math.isfinite(self.nce_temperature) or self.nce_temperature <= 0:
+            raise ValueError("PatchNCE temperature must be finite and positive")
         if not 0 <= self.action_step < self.ode_steps or self.ode_steps < 2:
             raise ValueError("action_step is zero-based and must index the Euler grid")
-        positive = (self.pixel_size_um, self.h_scale, self.tissue_od,
-                    self.action_std, self.velocity_limit, self.kl_limit, self.flow_lr, self.rl_lr,
-                    self.adversarial_weight, self.critic_lr, self.advantage_scale,
+        positive = (self.pixel_size_um, self.tissue_od,
+                    self.action_std, self.velocity_limit, self.velocity_rms_floor,
+                    self.min_reward_spread,
+                    self.kl_limit, self.flow_lr, self.rl_lr,
+                    self.adversarial_weight, self.critic_lr,
                     *self.markers.values())
         if any(not math.isfinite(value) or value <= 0 for value in positive):
             raise ValueError("Physical and optimization scales must be finite and positive")
-        if not math.isfinite(self.flow_reward_weight) or self.flow_reward_weight < 0:
-            raise ValueError("Flow reward weight must be finite and nonnegative")
         if not 0 <= self.intensity_weight <= 1 or not 0 < self.ppo_clip < 1:
             raise ValueError("Invalid reward or PPO weight")
         for name in ("stain_h", "stain_e", "stain_d"):
@@ -84,4 +93,8 @@ class Config:
 
 
 def read_config(path: Path) -> Config:
-    return Config(**json.loads(path.read_text(encoding="utf-8")))
+    values = json.loads(path.read_text(encoding="utf-8"))
+    # Older configs exposed fixed PPO advantage scaling. The current update
+    # normalizes within each candidate pair and uses min_reward_spread instead.
+    values.pop("advantage_scale", None)
+    return Config(**values)

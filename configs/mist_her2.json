@@ -1,12 +1,24 @@
 {
-  "markers": {"HER2": 0.35},
+  "markers": {
+    "HER2": 0.35
+  },
   "pixel_size_um": 0.4661,
   "crop": 256,
   "region": 32,
   "context": 128,
   "overlap": 64,
   "channels": 32,
-  "channel_mult": [1, 2, 2, 4],
+  "channel_mult": [
+    1,
+    2,
+    2,
+    4
+  ],
+  "morphology_width": 32,
+  "morphology_channels": 64,
   "ode_steps": 8,
-  "action_step": 4
+  "action_step": 4,
+  "patch_projection_dim": 128,
+  "nce_patches": 64,
+  "nce_temperature": 0.07
 }

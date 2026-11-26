@@ -16,8 +16,7 @@ from .config import Config
 from .data import IHCCrops, atomic_write
 from .model import StainFlow, VelocityPolicy
 from .stains import canonical_size, decompose
-from .trajectory import (collect, direct_policy_update, policy_update, reward_indices, sample_rgb,
-                         terminal_reward, unpaired_reward)
+from .trajectory import collect, direct_policy_update, policy_update, sample_rgb, terminal_reward
 
 
 def choose_device(name):
@@ -36,7 +35,7 @@ def precision(device):
 def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_optimizer=None, policy_objective=None,
                     flow_optimizer=None):
     state = {
-        "format": 4, "stage": stage, "step": step, "config": asdict(model.cfg),
+        "format": 8, "stage": stage, "step": step, "config": asdict(model.cfg),
         "model": model.state_dict(), "optimizer": optimizer.state_dict(),
     }
     if critic_optimizer is not None:
@@ -51,9 +50,13 @@ def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_opt
 
 def open_checkpoint(path, device):
     state = torch.load(path, map_location=device, weights_only=True)
-    if state.get("format") != 4 or state.get("stage") not in {"flow", "rl"}:
-        raise ValueError("This checkpoint is incompatible with label-free RGB flow. Train a new format 4 checkpoint")
-    model = StainFlow(Config(**state["config"])).to(device)
+    if state.get("format") != 8 or state.get("stage") not in {"flow", "rl"}:
+        raise ValueError("This checkpoint predates paired PatchNCE/PatchGAN training. Train a new format 8 checkpoint")
+    # Checkpoints written before group-normalized PPO stored a fixed
+    # `advantage_scale`; it is obsolete under the current reward-signal gate.
+    config = dict(state["config"])
+    config.pop("advantage_scale", None)
+    model = StainFlow(Config(**config)).to(device)
     model.load_state_dict(state["model"])
     policy = None
     if state["stage"] == "rl":
@@ -84,47 +87,44 @@ def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=No
     cfg = model.cfg
     optimizer.zero_grad(set_to_none=True)
     critic_optimizer.zero_grad(set_to_none=True)
-    with precision(he.device):
-        flow_loss, nce_loss, fake = model.losses(image, he, marker)
-        critic_loss = 0.5 * (F.softplus(-model.critic(image, marker)).mean()
-                             + F.softplus(model.critic(fake.detach(), marker)).mean())
-    if not torch.isfinite(critic_loss):
-        raise FloatingPointError("Nonfinite critic loss")
-    critic_loss.backward()
-    torch.nn.utils.clip_grad_norm_(model.critic.parameters(), 1.0, error_if_nonfinite=True)
-    critic_optimizer.step()
-    critic_optimizer.zero_grad(set_to_none=True)
-
-    model.critic.requires_grad_(False)
+    policy_grad_state = [p.requires_grad for p in policy.parameters()] if policy is not None else None
+    if policy is not None:
+        # The policy is optimized by PPO/direct updates; here its action is a
+        # fixed controller, while gradients still pass through its inputs to G.
+        for parameter in policy.parameters():
+            parameter.grad = None
+        policy.requires_grad_(False)
     try:
         with precision(he.device):
-            adversarial_loss = F.softplus(-model.critic(fake, marker)).mean()
-            loss = flow_loss + cfg.nce_weight * nce_loss + cfg.adversarial_weight * adversarial_loss
-            reward = None
-            if policy is not None and cfg.flow_reward_weight > 0:
-                # The reward graph updates the velocity network, while the policy
-                # and scoring networks act as fixed functions for this term.
-                policy.requires_grad_(False)
-                model.patch_encoder.requires_grad_(False)
-                try:
-                    generated = sample_rgb(model, he, marker, torch.randn_like(he), policy)
-                    reward = unpaired_reward(model, he, generated, marker, reward_indices(model, he)).mean()
-                    loss = loss + cfg.flow_reward_weight * (1 - reward)
-                finally:
-                    model.patch_encoder.requires_grad_(True)
-                    policy.requires_grad_(True)
-        if not torch.isfinite(loss):
-            raise FloatingPointError("Nonfinite flow training loss")
-        loss.backward()
-        parameters = [param for group in optimizer.param_groups for param in group["params"]]
-        torch.nn.utils.clip_grad_norm_(parameters, 1.0, error_if_nonfinite=True)
-        optimizer.step()
+            flow_loss, nce_loss, fake = model.losses(image, he, marker, policy=policy)
+            critic_loss = 0.5 * (F.softplus(-model.critic(image, he, marker)).mean()
+                                 + F.softplus(model.critic(fake.detach(), he, marker)).mean())
+        if not torch.isfinite(critic_loss):
+            raise FloatingPointError("Nonfinite critic loss")
+        critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.critic.parameters(), 1.0, error_if_nonfinite=True)
+        critic_optimizer.step()
+        critic_optimizer.zero_grad(set_to_none=True)
+
+        model.critic.requires_grad_(False)
+        try:
+            with precision(he.device):
+                adversarial_loss = F.softplus(-model.critic(fake, he, marker)).mean()
+                loss = flow_loss + cfg.nce_weight * nce_loss + cfg.adversarial_weight * adversarial_loss
+            if not torch.isfinite(loss):
+                raise FloatingPointError("Nonfinite flow training loss")
+            loss.backward()
+            parameters = [param for group in optimizer.param_groups for param in group["params"]]
+            torch.nn.utils.clip_grad_norm_(parameters, 1.0, error_if_nonfinite=True)
+            optimizer.step()
+        finally:
+            model.critic.requires_grad_(True)
     finally:
-        model.critic.requires_grad_(True)
+        if policy is not None:
+            for parameter, requires_grad in zip(policy.parameters(), policy_grad_state):
+                parameter.requires_grad_(requires_grad)
     stats = {"flow_loss": flow_loss.item(), "nce_loss": nce_loss.item(),
              "critic_loss": critic_loss.item(), "adversarial_loss": adversarial_loss.item()}
-    if reward is not None:
-        stats["flow_reward"] = reward.item()
     return stats
 
 
@@ -166,8 +166,6 @@ def train_policy(args):
     torch.manual_seed(args.seed)
     model, policy, state = open_checkpoint(args.checkpoint, device)
     cfg = model.cfg
-    if args.advantage_scale is not None:
-        cfg.advantage_scale = args.advantage_scale
     if args.policy_lr is not None:
         cfg.rl_lr = args.policy_lr
     flow_optimizer, critic_optimizer = flow_optimizers(model)
@@ -202,12 +200,12 @@ def train_policy(args):
         model.eval().requires_grad_(False)
         try:
             with precision(device), torch.set_grad_enabled(direct):
-                experience = collect(model, policy, he, marker, direct=direct)
+                experience = collect(model, policy, he, image, marker, direct=direct)
             update = direct_policy_update if direct else policy_update
             stats = update(policy, optimizer, experience, cfg)
         finally:
             model.train().requires_grad_(True)
-        stats.update(flow_update(model, flow_optimizer, critic_optimizer, image, he, marker, policy))
+        stats.update(flow_update(model, flow_optimizer, critic_optimizer, image, he, marker, policy=policy))
         stats["objective"] = objective
         groups += he.shape[0]
         if groups >= next_save or groups == args.groups or groups == he.shape[0]:

@@ -1,9 +1,29 @@
-# Label-free unpaired RGB flow
+# Paired conditional RGB flow
 
-The flow term fits the target RGB IHC distribution from image samples. For an IHC sample and Gaussian noise, it regresses the velocity along their interpolation. The separate image condition is zero. An independent H&E crop supplies the image condition for a differentiable RGB rollout. The rollout uses the same Euler grid as inference. PatchNCE compares local features of the source H&E and its own generated image. The patch discriminator compares generated RGB with independent real IHC of the selected stain.
+Each training sample is a filename-level H&E/IHC pair. Both crops use the same coordinate. The code rejects missing pair members, mismatched groups/splits, and unequal canonical image dimensions.
 
-Each joint iteration first draws two candidate trajectories from the current flow and samples separate RGB velocity corrections at the action step. A fixed copy in time of the flow and scorers is used for that policy update. PPO and the direct gradient control use the same reward, bounded actions and KL rollback. The flow and discriminator then take a training step. The flow objective combines flow matching, PatchNCE, adversarial realism and a weighted terminal reward from a new rollout with the current policy mean. The reward gradient passes through the Euler steps into the velocity network. The scorer and policy parameters are held fixed for this reward term, while the patch encoder and discriminator continue to learn from their base objectives. Keeping the flow fixed within the policy update avoids changing the rollout dynamics during PPO's likelihood-ratio calculation. The next policy batch uses the newly updated flow.
+## Generator: three objectives
 
-The terminal score averages IHC realism and source/output patch similarity. These scores cover appearance and structure, and supply no observed map of expression on the H&E image.
+The generator is trained with
 
-Training samples contain RGB and stain identity only. DAB extraction and paired comparison are evaluation operations outside the training path. Paired evaluation at cell resolution requires reliable spatial correspondence.
+\[
+\mathcal L_G=\mathcal L_{\mathrm{CFM}}+\lambda_{\mathrm{NCE}}\mathcal L_{\mathrm{PatchNCE}}+\lambda_{\mathrm{adv}}\mathcal L_{\mathrm{adv}}.
+\]
+
+- **Conditional flow matching** uses the paired IHC as the endpoint and its corresponding H&E and marker as conditions. The implementation calls TorchCFM's `ConditionalFlowMatcher` and uses its guided-diffusion U-Net.
+- **PatchNCE** follows the official CUT organization: sample shared spatial indices, project local features, treat same-position H&E/generated-IHC features as positives, and other positions within the image as negatives. It compares the input H&E with its own generated output; it does not use reference-IHC pixel alignment. The exact CUT modules remain available as a pinned submodule for side-by-side comparison.
+- **Adversarial loss** follows the paired pix2pix PatchGAN structure. The discriminator receives concatenated H&E, IHC and marker indicator maps. The adaptation uses a marker-conditioned paired discriminator and logistic loss.
+
+No separate teacher-distillation or generator reward term is included. The configured MIST weights start at `nce_weight=0.1` and `adversarial_weight=0.1`; they require empirical tuning and are not claimed optimal.
+
+## Morphology features
+
+Both images are projected into a canonical hematoxylin concentration by cancelling the domain's other stain vector: eosin for H&E and DAB for IHC. A residual CNN/FPN processes H concentration, Sobel magnitude and Laplacian channels. Its three returned weights are fixed soft proxies computed from H concentration and edge strength; they are not biological compartments or segmentation masks. DAB is not an input to this encoder.
+
+## PPO policy
+
+The policy makes one bounded regional velocity correction at a selected flow step. Its separate reward compares generated and paired-reference DAB support and amount over regional windows. PPO updates the policy from two candidate trajectories sharing the same prefix; advantages are normalized within each candidate pair, while pairs whose reward difference is below `min_reward_spread` (default `1e-5`) are skipped and reported through `signal_fraction`. This prevents near-ties from being treated as strong policy evidence. The score is not added a second time to the generator loss. On each subsequent generator update, the current policy's mean action is used in the rollout that supplies PatchNCE and adversarial losses. Policy parameters are held fixed during this generator step, while gradients pass through the corrected trajectory into the flow network. CFM continues to regularize the base velocity field. Therefore the full model has three generator terms, one discriminator objective, and one policy objective. The reward is still derived from the paired IHC and is not independent biological supervision.
+
+## Data split and limitations
+
+The bundled MIST provenance manifest can be used directly. Since original image-level train/validation lists share source prefixes, the loader deterministically assigns whole prefixes to 80/10/10 train/validation/test sets before caching. This avoids prefix overlap; source prefixes are not verified patient IDs. Filename pairing does not guarantee exact serial-section registration. Registration quality matters for pixelwise CFM targets, paired adversarial conditioning and regional DAB reward. PatchNCE anchors generated morphology features to H&E coordinates but does not establish cell identity or expression status. The model learns paired-image statistics; it does not establish causal cell-level expression understanding.
