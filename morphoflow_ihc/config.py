@@ -27,7 +27,7 @@ class Config:
     nce_temperature: float = 0.07
     adversarial_weight: float = 0.1
     critic_lr: float = 0.0002
-    advantage_scale: float = 0.01
+    advantage_scale: float = 0.01  # legacy checkpoint compatibility; unused by group-normalized PPO
     tissue_od: float = 0.10
     stain_h: tuple[float, ...] = (0.650, 0.704, 0.286)
     stain_e: tuple[float, ...] = (0.072, 0.990, 0.105)
@@ -36,6 +36,7 @@ class Config:
     action_std: float = 0.20
     velocity_limit: float = 0.10
     velocity_rms_floor: float = 0.05
+    min_reward_spread: float = 1e-5
     ppo_clip: float = 0.15
     kl_limit: float = 0.02
     flow_lr: float = 0.0002
@@ -71,6 +72,7 @@ class Config:
             raise ValueError("action_step is zero-based and must index the Euler grid")
         positive = (self.pixel_size_um, self.tissue_od,
                     self.action_std, self.velocity_limit, self.velocity_rms_floor,
+                    self.min_reward_spread,
                     self.kl_limit, self.flow_lr, self.rl_lr,
                     self.adversarial_weight, self.critic_lr, self.advantage_scale,
                     *self.markers.values())
@@ -92,4 +94,8 @@ class Config:
 
 
 def read_config(path: Path) -> Config:
-    return Config(**json.loads(path.read_text(encoding="utf-8")))
+    values = json.loads(path.read_text(encoding="utf-8"))
+    # Older configs exposed fixed PPO advantage scaling. The current update
+    # normalizes within each candidate pair and uses min_reward_spread instead.
+    values.pop("advantage_scale", None)
+    return Config(**values)
