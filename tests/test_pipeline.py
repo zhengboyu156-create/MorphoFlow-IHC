@@ -1,5 +1,6 @@
 import csv
 import json
+from dataclasses import asdict
 
 import numpy as np
 from PIL import Image
@@ -43,9 +44,14 @@ def test_policy_accepts_small_update_and_rolls_back_large_update():
     result = policy_update(model, optimizer, experience, cfg, passes=1)
     assert result["accepted"] == 1
     assert result["kl"] > 0
+    assert result["signal_fraction"] == 1
     assert not torch.equal(mean, model(observation))
     tied = (*experience[:-1], torch.tensor([[0.5000001], [0.5]]))
-    assert policy_update(model, optimizer, tied, cfg, passes=1)["accepted"] == 0
+    before = {name: value.clone() for name, value in model.state_dict().items()}
+    result = policy_update(model, optimizer, tied, cfg, passes=1)
+    assert result["accepted"] == 0
+    assert result["signal_fraction"] == 0
+    assert all(torch.equal(value, model.state_dict()[name]) for name, value in before.items())
 
     cfg.kl_limit = 1e-14
     with torch.no_grad():
@@ -177,6 +183,13 @@ def test_patchnce_reaches_rgb_generator_and_old_checkpoints_rejected(tmp_path):
     torch.save({'format': 1, 'stage': 'flow'}, old)
     with pytest.raises(ValueError, match='checkpoint'):
         open_checkpoint(old, torch.device('cpu'))
+    legacy = tmp_path / 'legacy-format-8.pt'
+    legacy_config = asdict(cfg) | {'advantage_scale': 0.01}
+    torch.save({'format': 8, 'stage': 'flow', 'config': legacy_config,
+                'model': model.state_dict()}, legacy)
+    reopened, policy, _ = open_checkpoint(legacy, torch.device('cpu'))
+    assert reopened.cfg.min_reward_spread == cfg.min_reward_spread
+    assert policy is None
 
 
 def test_rgb_dab_diagnostic_matches_numpy_decomposition():
