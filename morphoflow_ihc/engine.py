@@ -100,8 +100,8 @@ def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=No
     try:
         with precision(he.device):
             flow_loss, nce_loss, fake = model.losses(image, he, marker, policy=policy)
-            critic_loss = 0.5 * (F.softplus(-model.critic(image, he, marker)).mean()
-                                 + F.softplus(model.critic(fake.detach(), he, marker)).mean())
+            critic_loss = 0.5 * (F.softplus(-model.critic(image, marker)).mean()
+                                 + F.softplus(model.critic(fake.detach(), marker)).mean())
         if not torch.isfinite(critic_loss):
             raise FloatingPointError("Nonfinite critic loss")
         critic_loss.backward()
@@ -112,7 +112,7 @@ def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=No
         model.critic.requires_grad_(False)
         try:
             with precision(he.device):
-                adversarial_loss = F.softplus(-model.critic(fake, he, marker)).mean()
+                adversarial_loss = F.softplus(-model.critic(fake, marker)).mean()
                 loss = flow_loss + cfg.nce_weight * nce_loss + cfg.adversarial_weight * adversarial_loss
             if not torch.isfinite(loss):
                 raise FloatingPointError("Nonfinite flow training loss")
@@ -152,7 +152,11 @@ def train_flow(args, cfg):
     for pack in batches(loader):
         if step >= target or time.monotonic() >= deadline:
             break
-        marker, image, he = (value.to(device, non_blocking=True) for value in pack)
+        marker_cpu, _, he_cpu = pack
+        image = torch.stack([dataset.sample_ihc(int(value)) for value in marker_cpu])
+        marker = marker_cpu.to(device, non_blocking=True)
+        image = image.to(device, non_blocking=True)
+        he = he_cpu.to(device, non_blocking=True)
         stats = flow_update(model, optimizer, critic_optimizer, image, he, marker)
         step += 1
         if step == 1 or step % args.save_every == 0 or step == target:
@@ -198,13 +202,19 @@ def train_policy(args):
         if groups >= args.groups or time.monotonic() >= deadline:
             break
         limit = args.groups - groups
-        marker, image, he = (value[:limit].to(device, non_blocking=True) for value in pack)
+        marker_cpu, reference_cpu, he_cpu = (value[:limit] for value in pack)
+        image = torch.stack([dataset.sample_ihc(int(value)) for value in marker_cpu])
+        marker = marker_cpu.to(device, non_blocking=True)
+        reference = reference_cpu.to(device, non_blocking=True)
+        image = image.to(device, non_blocking=True)
+        he = he_cpu.to(device, non_blocking=True)
         direct = objective == "direct"
-        # Keep this rollout's environment fixed through its policy update.
+        # PPO uses the paired reference only as a coarse regional expression reward.
+        # Pixelwise flow and IHC realism use independently sampled same-marker targets.
         model.eval().requires_grad_(False)
         try:
             with precision(device), torch.set_grad_enabled(direct):
-                experience = collect(model, policy, he, image, marker, direct=direct)
+                experience = collect(model, policy, he, reference, marker, direct=direct)
             update = direct_policy_update if direct else policy_update
             stats = update(policy, optimizer, experience, cfg)
         finally:
