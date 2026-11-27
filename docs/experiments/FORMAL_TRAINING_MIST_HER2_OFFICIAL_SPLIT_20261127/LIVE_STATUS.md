@@ -1,14 +1,14 @@
 # Live training status
 
-Updated: 2026-11-27 20:54 +08:00 (remote host clock)
+Updated: 2026-11-27 20:57:46 +08:00 (remote host clock)
 
-- Status: official-split Flow training active; PID 803; started 20:53:34 +08:00.
+- Status: official-split Flow training active; Python PID 803; started 20:53:34 +08:00.
 - Source commit: `52e5c41e82d235a4892851e695d0be6f28ce022e`; branch `fix/regionally-tolerant-flow-training-20261127`.
-- Data split is audited: 4,642 official train pairs, 0 validation pairs, 1,000 official test pairs; zero official-test pairs in the train cache. See `CACHE_AUDIT.md`.
-- Progress: step 1 / 116,050. Fresh `flow.pt` created at 20:53:45 +08:00, 49,690,081 bytes. Step-1 losses are finite: CFM 0.29265, PatchNCE 4.47229, critic 0.73835, adversarial 0.66964.
-- Run settings: seed 1234, batch 1, workers 0, 25 epochs, 20-hour Flow cap; PPO follows this fresh checkpoint with a 6-hour cap. No checkpoint from the halted custom split was resumed.
-- At launch the GPU showed 49% utilization and 4,670 MiB used. Runtime is Python 3.10.8 / PyTorch 2.1.2+cu118, below the repository's declared PyTorch 2.7 minimum.
-- Provisional estimate using the prior run's measured 2.57 updates/s: Flow ~12h33, PPO up to 6h, total training ~18h33 from launch. Refresh after the first 500 steps; official test evaluation is additional and not timed yet.
-- No official validation set exists. Test data will be evaluated only after training choices are fixed.
+- Audited cache: 4,642 official train / 0 validation / 1,000 official test; 0 official-test entries in training. Cache index SHA-256 `b14d501b3c60fd4593e2e3c322965be50a4d9a4537aa5979bdf1c1576f1cb1e9`.
+- Progress: 500 / 116,050 Flow updates. Latest checkpoint `flow.pt` updated 20:57:05 +08:00, 49,690,081 bytes.
+- Step-500 losses: CFM 0.0114914, PatchNCE 0.1350613, critic 0.0006766, adversarial 7.7660287; all finite.
+- First-interval throughput: 500 updates in 4m12s (~1.98 updates/s). If sustained, Flow is estimated to finish around 2026-11-28 13:08 +08:00; PPO then has a 6-hour cap, for a provisional training end around 19:08 +08:00. The 20-hour Flow cap would not bind at this rate. This estimate is early and will be revised after more checkpoints.
+- GPU utilization at observation: 62%, 4,670 MiB used. Environment: Python 3.10.8 / PyTorch 2.1.2+cu118, below the repository-declared PyTorch 2.7 minimum.
+- No official validation set exists. Do not inspect the official test set for model selection; evaluate it after the schedule/checkpoint is fixed.
 
-Weights, image files, and prediction arrays are not included in Git.
+Weights, source images, and prediction arrays remain off Git.
