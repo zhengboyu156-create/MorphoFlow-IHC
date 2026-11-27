@@ -138,6 +138,8 @@ def train_flow(args, cfg):
     step = 0
     if args.resume:
         model, _, state = open_checkpoint(args.resume, device)
+        if state["config"].get("ihc_target_mode") != cfg.ihc_target_mode:
+            raise ValueError("Legacy paired-target checkpoints cannot resume in unpaired-target mode; start a fresh run")
         if state["stage"] != "flow" or model.cfg != cfg:
             raise ValueError("Resume requires a flow checkpoint with the same model configuration")
         step = state["step"]
@@ -173,6 +175,8 @@ def train_policy(args):
     torch.manual_seed(args.seed)
     model, policy, state = open_checkpoint(args.checkpoint, device)
     cfg = model.cfg
+    if state["config"].get("ihc_target_mode") != cfg.ihc_target_mode:
+        raise ValueError("Policy training requires a flow checkpoint trained with the unpaired same-marker target protocol")
     if args.policy_lr is not None:
         cfg.rl_lr = args.policy_lr
     flow_optimizer, critic_optimizer = flow_optimizers(model)
