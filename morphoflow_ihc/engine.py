@@ -16,7 +16,7 @@ from .config import Config
 from .data import IHCCrops, atomic_write
 from .model import StainFlow, VelocityPolicy
 from .stains import canonical_size, decompose
-from .trajectory import collect, direct_policy_update, policy_update, sample_rgb, terminal_reward
+from .trajectory import collect, direct_policy_update, policy_update, regional_average, sample_rgb, terminal_reward
 
 
 def choose_device(name):
@@ -288,8 +288,9 @@ def evaluate(args, cfg):
     seen = F.pad(torch.from_numpy(tissue)[None, None], pad)
     if not seen.any():
         raise ValueError("Reference contains no evaluable tissue")
-    count = F.avg_pool2d(seen.float(), region)
-    phases = [F.avg_pool2d(((a > tau) & seen).float(), region) / count.clamp_min(1e-8) for a in (estimate, actual)]
+    count = regional_average(seen.float(), region)
+    phases = [regional_average(((a > tau) & seen).float(), region) / count.clamp_min(1e-8)
+              for a in (estimate, actual)]
     metrics = {
         "marker": args.marker.upper(), "threshold": tau, "region_px": region,
         "region_support_fraction_mae": (phases[0] - phases[1]).abs()[count > 0].mean().item(),
