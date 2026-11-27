@@ -61,6 +61,8 @@ class Config:
         if (self.reward_region < self.region or self.reward_region > self.crop
                 or self.crop % self.reward_region or self.reward_region % self.region):
             raise ValueError("reward_region must be a region-aligned divisor of crop, at least region")
+        if self.ihc_target_mode != "unpaired_same_marker":
+            raise ValueError("ihc_target_mode must be unpaired_same_marker")
         if self.crop % (2 ** (len(self.channel_mult) - 1)):
             raise ValueError("crop is incompatible with U-Net downsampling")
         if self.context <= self.region or self.context % self.region:
