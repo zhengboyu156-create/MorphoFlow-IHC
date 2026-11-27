@@ -21,8 +21,8 @@ class Config:
     channels: int = 32
     channel_mult: tuple[int, ...] = (1, 2, 2, 4)
     residual_blocks: int = 1
-    ode_steps: int = 8
-    action_step: int = 4
+    ode_steps: int = 4
+    action_step: int = 2
     nce_weight: float = 0.1
     morphology_width: int = 32
     morphology_channels: int = 64

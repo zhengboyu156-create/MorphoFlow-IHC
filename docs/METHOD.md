@@ -20,6 +20,8 @@ The generator is trained with
 
 No separate teacher-distillation or generator reward term is included. The configured MIST weights start at `nce_weight=0.1` and `adversarial_weight=0.1`; they require empirical tuning and are not claimed optimal.
 
+The fast-algorithm variant uses the CFM model's existing velocity prediction to form a one-step Euler endpoint estimate for the auxiliary PatchNCE/PatchGAN terms during Flow-only updates. Policy-guided PPO rollouts and inference use four Euler steps, with the policy acting at step two. The shortcut preserves the three loss terms and their coefficients but changes the generated sample used by auxiliary losses; it is an algorithm variant and must be trained and evaluated separately from the eight-step version.
+
 ## Morphology features
 
 Both images are projected into a canonical hematoxylin concentration by cancelling the domain's other stain vector: eosin for H&E and DAB for IHC. A residual CNN/FPN processes H concentration, Sobel magnitude and Laplacian channels. Its three returned weights are fixed soft proxies computed from H concentration and edge strength; they are not biological compartments or segmentation masks. DAB is not an input to this encoder.

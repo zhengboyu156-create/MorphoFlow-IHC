@@ -323,9 +323,19 @@ def test_flow_target_uses_its_paired_he_condition():
     rgb = torch.rand(2, 3, 32, 32) * 2 - 1
     he = torch.rand_like(rgb) * 2 - 1
     model.losses(rgb, he, torch.zeros(2, dtype=torch.long))
-    assert len(observed) == cfg.ode_steps + 1
+    assert len(observed) == 1
     for condition in observed:
         torch.testing.assert_close(condition, he)
+
+
+def test_single_step_cfm_endpoint_recovers_straight_bridge_target():
+    from morphoflow_ihc.model import single_step_endpoint
+    noise = torch.full((2, 3, 8, 8), -0.5)
+    target = torch.full_like(noise, 0.5)
+    time = torch.tensor([0.25, 0.75])
+    state = noise * (1 - time[:, None, None, None]) + target * time[:, None, None, None]
+    velocity = target - noise
+    torch.testing.assert_close(single_step_endpoint(state, time, velocity), target)
 
 
 def test_paired_reward_prefers_reference_and_stays_bounded():

@@ -16,6 +16,8 @@ This is an explicit schedule adaptation, not a claim that the two methods have i
 
 The MAPS-style LR factor stays at 1.0 through epoch 40, then follows the standard linear rule `1 - (decay_epoch / 11)` for the 10 decay epochs (10/11 down to 1/11 on epochs 41–50; the next epoch would be 0). The schedule is computed from completed global data passes, so resuming a checkpoint preserves its epoch position.
 
+The fast-algorithm variant keeps the 512 px crop, batch 1, official split, and 40+10 optimizer schedule. During Flow-only updates, PatchNCE and PatchGAN use a one-step Euler endpoint estimate from the same CFM velocity prediction instead of an additional 8-step generated trajectory. This estimate is exact for the ideal straight `sigma=0` conditional bridge and approximate for a learned velocity field. PPO still samples policy-guided trajectories; the solver is reduced from 8 to 4 Euler steps with the policy action at step 2, and inference uses the same 4-step solver. This changes the algorithm and is a fresh experiment; do not resume the earlier 8-step checkpoint as if equivalent.
+
 Reference: [MAPS-GAN active V3 preset](https://github.com/zhengboyu156-create/MAPS-GAN-CGA-BES-CDM/blob/main/configs/active_method.json), [V3 protocol](https://github.com/zhengboyu156-create/MAPS-GAN-CGA-BES-CDM/blob/main/docs/ACTIVE_V3.md), and [MIST/BCI comparison protocol](https://github.com/zhengboyu156-create/MAPS-GAN-CGA-BES-CDM/blob/main/docs/experiments/BCI_MIST_HER2_BASELINE_PROTOCOL.md).
 
 ## Inference behavior

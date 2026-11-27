@@ -19,8 +19,8 @@
   ],
   "morphology_width": 32,
   "morphology_channels": 64,
-  "ode_steps": 8,
-  "action_step": 4,
+  "ode_steps": 4,
+  "action_step": 2,
   "patch_projection_dim": 128,
   "nce_patches": 64,
   "nce_temperature": 0.07
