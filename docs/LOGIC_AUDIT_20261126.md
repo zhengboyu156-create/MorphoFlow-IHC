@@ -7,7 +7,7 @@ The main training path is now connected end to end: paired H&E/IHC data train a 
 ## Verified data path
 
 - The bundled MIST manifest has 11,284 image rows: 5,642 H&E/IHC filename pairs across 61 source prefixes. All referenced files exist and every pair key has one H&E and one IHC image.
-- The deterministic prefix split assigns 49/6/6 prefixes to train/validation/test, yielding 4,533/600/509 pairs. This is grouped by source prefix, not verified patient identity.
+- The corrected MIST path preserves all 4,642 author-designated training pairs and all 1,000 author-designated test pairs. The source archive names its official test folders `valA/valB`; source prefixes are not treated as patient identifiers. MIST has no separate official validation cohort, so the test set remains reserved for final evaluation.
 - Training samples a shared crop coordinate from each paired image and checks matching canonical dimensions. That establishes filename-level pairing and shape consistency, not pixel registration.
 
 ## Verified objective and update path

@@ -21,3 +21,5 @@ Therefore 807 official test pairs entered the formal training cache. The resulti
 The formal Flow run was stopped on 2026-11-27 at about 20:02 +08:00 after the issue was confirmed. The latest logged step was 8,000; `flow.pt` was preserved (about 49.7 MB, checkpoint mtime 20:00:26 +08:00). Its log and checkpoint are retained for provenance only and must not be presented as an official-split result. PPO was not started.
 
 For an official-protocol rerun, keep all 1,000 official test pairs untouched. If a validation set is needed for decisions, carve it out of the 4,642 official training pairs and label it as a new validation subset; do not call it an official validation set. The existing checkpoint was trained with official test examples and must not be resumed for that rerun.
+
+For the corrected official-protocol rerun, all 4,642 official training pairs are retained for training and all 1,000 official test pairs remain held out until final evaluation. MIST provides no separate official validation set. See `docs/experiments/FORMAL_TRAINING_MIST_HER2_OFFICIAL_SPLIT_20261127/RUN_PLAN.md`.

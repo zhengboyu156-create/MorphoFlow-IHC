@@ -123,23 +123,39 @@ def test_unmatched_pair_is_rejected_before_opening_images(tmp_path):
         prepare(manifest, tmp_path / "bad-cache", Config())
 
 
-def test_mist_archive_pairs_by_source_prefix_and_splits_whole_prefixes(tmp_path):
+def test_mist_archive_preserves_official_train_and_test_cohorts(tmp_path):
     manifest = tmp_path / "manifest.csv"
     rows = ["split,source_prefix,filename,bytes,sha256"]
-    for group in ("case-a", "case-b", "case-c"):
-        for split in ("trainA", "trainB", "valA", "valB"):
-            section = "train" if split.startswith("train") else "val"
-            rows.append(f"{split},{group},{group}_{section}_1_1.jpg,0,hash")
+    for index in range(10):
+        prefix = "shared-case-prefix"
+        filename = f"{prefix}_train_{index}.jpg"
+        rows.extend((f"trainA,{prefix},{filename},0,hash",
+                     f"trainB,{prefix},{filename},0,hash"))
+    for index in range(3):
+        prefix = "shared-case-prefix"
+        filename = f"{prefix}_test_{index}.jpg"
+        rows.extend((f"valA,{prefix},{filename},0,hash",
+                     f"valB,{prefix},{filename},0,hash"))
     manifest.write_text("\n".join(rows) + "\n")
     normalized = _manifest_rows(manifest, Config(markers={"HER2": 0.35}))
-    grouped = {}
+    pair_splits = {}
+    pair_cohorts = {}
     modalities = {}
     for row in normalized:
-        grouped.setdefault(row["group"], set()).add(row["split"])
+        pair_splits.setdefault(row["pair_id"], set()).add(row["split"])
+        pair_cohorts.setdefault(row["pair_id"], set()).add(row["source_cohort"])
         modalities.setdefault(row["pair_id"], set()).add(row["domain"])
-    assert len(normalized) == 12
-    assert all(len(splits) == 1 for splits in grouped.values())
+    assignments = {pair: next(iter(splits)) for pair, splits in pair_splits.items()}
+    assert len(normalized) == 26
+    assert sum(split == "train" for split in assignments.values()) == 10
+    assert sum(split == "val" for split in assignments.values()) == 0
+    assert sum(split == "test" for split in assignments.values()) == 3
+    assert all(pair_cohorts[pair] == {"official_test"} and assignments[pair] == "test"
+               for pair in assignments if "_test_" in pair)
+    assert all(assignments[pair] == "train" and pair_cohorts[pair] == {"official_train"}
+               for pair in assignments if "_train_" in pair)
     assert all(domains == {"HE", "IHC"} for domains in modalities.values())
+    assert _manifest_rows(manifest, Config(markers={"HER2": 0.35})) == normalized
 
 
 def test_cli_pipeline(tmp_path):

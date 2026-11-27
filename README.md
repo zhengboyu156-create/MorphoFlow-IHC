@@ -16,7 +16,7 @@ he/p002.png,,slide-02,HE,val,pair-002,0.4661
 ihc/p002.png,HER2,slide-02,IHC,val,pair-002,0.4661
 ```
 
-`prepare` also accepts the bundled MIST provenance manifest directly. It pairs `trainA/trainB` and `valA/valB` by source prefix and filename, then deterministically repartitions whole prefixes into 80/10/10 train/validation/test groups because the archive's original train/validation image lists share prefixes. This avoids prefix overlap, but source prefixes are not verified patient IDs; do not claim patient-independent results without checking patient metadata. Only training pairs are written to the training cache. The example pixel spacing and DAB evaluation threshold should be verified for each dataset.
+`prepare` also accepts the bundled MIST provenance manifest directly. The MIST authors specify 4,642 HER2 training pairs and 1,000 test pairs, with no separate official validation set; in this archive the official test cohort is named `valA/valB`. The loader preserves the official cohorts as 4,642 train / 1,000 test pairs and does not create a validation split. `source_prefix` is not treated as a patient ID. Only training pairs are written to the training cache. The official test set should be evaluated only after training choices are fixed. The example pixel spacing and DAB evaluation threshold should be verified for each dataset.
 
 ## Paired training
 

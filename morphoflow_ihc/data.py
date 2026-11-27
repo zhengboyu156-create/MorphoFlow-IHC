@@ -1,7 +1,6 @@
 """Cache paired RGB training images and sample shared-coordinate crops."""
 
 import csv
-import hashlib
 import json
 from pathlib import Path
 from tempfile import NamedTemporaryFile, mkdtemp
@@ -39,46 +38,49 @@ def cache_settings(cfg: Config) -> dict:
     }
 
 
-def _group_split(prefixes):
-    """Deterministically split source prefixes 80/10/10 without prefix leakage."""
-    ordered = sorted(set(prefixes), key=lambda value: hashlib.sha256(
-        ("MorphoFlow-IHC-paired-v1:" + value).encode("utf-8")).digest())
-    if len(ordered) < 3:
-        raise ValueError("At least three source groups are required for train/val/test splitting")
-    n_test = max(1, round(len(ordered) * 0.1))
-    n_val = max(1, round(len(ordered) * 0.1))
-    n_train = len(ordered) - n_val - n_test
-    return {group: ("train" if i < n_train else "val" if i < n_train + n_val else "test")
-            for i, group in enumerate(ordered)}
-
-
 def _manifest_rows(manifest: Path, cfg: Config):
     with manifest.open(encoding="utf-8-sig", newline="") as stream:
         reader = csv.DictReader(stream)
         fields = set(reader.fieldnames or ())
         rows = list(reader)
 
-    # The bundled MIST provenance manifest pairs A/B images by filename. Its
-    # published crop split mixes source prefixes across train and validation,
-    # so reassign whole prefixes before using it for model selection.
+    # The upstream MIST authors define 4,642 HER2 training pairs and 1,000
+    # testing pairs. The MAPS-GAN archive calls the latter valA/valB, so keep
+    # that cohort as test. MIST has no upstream validation cohort; do not move
+    # official test pairs into training or invent a validation split here.
+    # Prefixes are not used as patient identifiers or split groups.
     if {"split", "source_prefix", "filename"}.issubset(fields):
         if len(cfg.markers) != 1:
             raise ValueError("The bundled MIST HER2 manifest requires a single-marker config")
-        splits = _group_split(row["source_prefix"].strip() for row in rows)
+        valid_splits = {"trainA", "trainB", "valA", "valB"}
+        pair_cohorts = {}
+        for row in rows:
+            source_split = row["split"].strip()
+            if source_split not in valid_splits:
+                raise ValueError(f"Unsupported MIST source split: {source_split}")
+            pair_id = f"{row['source_prefix'].strip()}/{row['filename'].strip()}"
+            pair_cohorts.setdefault(pair_id, set()).add(source_split)
+        for pair_id, cohorts in pair_cohorts.items():
+            if cohorts not in ({"trainA", "trainB"}, {"valA", "valB"}):
+                raise ValueError(f"MIST pair {pair_id!r} must have matching A/B cohort rows")
+
         normalized = []
         for row in rows:
             source_split = row["split"].strip()
-            if source_split not in {"trainA", "trainB", "valA", "valB"}:
-                raise ValueError(f"Unsupported MIST source split: {source_split}")
             group = row["source_prefix"].strip()
             domain = "HE" if source_split.endswith("A") else "IHC"
+            pair_id = f"{group}/{row['filename'].strip()}"
+            is_official_test = source_split.startswith("val")
             normalized.append({
                 "path": str(Path(source_split) / group / row["filename"].strip()),
                 "marker": next(iter(cfg.markers)) if domain == "IHC" else "",
-                "group": group,
+                # Pair-level grouping preserves the upstream cohort boundary;
+                # source_prefix values occur in both upstream cohorts.
+                "group": pair_id,
                 "domain": domain,
-                "split": splits[group],
-                "pair_id": f"{group}/{row['filename'].strip()}",
+                "split": "test" if is_official_test else "train",
+                "pair_id": pair_id,
+                "source_cohort": "official_test" if is_official_test else "official_train",
                 "mpp": row.get("mpp") or cfg.pixel_size_um,
             })
         return normalized
@@ -108,9 +110,13 @@ def prepare(manifest: Path, output: Path, cfg: Config) -> int:
         source = (manifest.parent / row["path"].strip()).resolve()
         if path_splits.setdefault(source, split) != split:
             raise ValueError(f"Image path spans splits: {source}")
-        entry = pairs.setdefault(pair_id, {"group": group, "split": split, "modalities": {}})
+        source_cohort = row.get("source_cohort") or None
+        entry = pairs.setdefault(pair_id, {"group": group, "split": split,
+                                            "source_cohort": source_cohort, "modalities": {}})
         if entry["group"] != group or entry["split"] != split or domain in entry["modalities"]:
             raise ValueError(f"Pair {pair_id!r} has inconsistent group/split or duplicate modality")
+        if entry["source_cohort"] != source_cohort:
+            raise ValueError(f"Pair {pair_id!r} crosses source cohorts")
         mpp = float(row.get("mpp") or cfg.pixel_size_um)
         entry["modalities"][domain] = (source, mpp)
         if domain == "IHC":
@@ -156,11 +162,23 @@ def prepare(manifest: Path, output: Path, cfg: Config) -> int:
             paths[domain] = f"{payload_dir.name}/{name}"
         if sizes["HE"] != sizes["IHC"]:
             raise ValueError(f"Paired images must have equal canonical size: {pair_id}")
-        entries.append({"he_file": paths["HE"], "ihc_file": paths["IHC"],
-                        "marker": entry["marker"], "pair_id": pair_id, "group": entry["group"],
-                        "split": entry["split"]})
+        cache_entry = {"he_file": paths["HE"], "ihc_file": paths["IHC"],
+                       "marker": entry["marker"], "pair_id": pair_id, "group": entry["group"],
+                       "split": entry["split"]}
+        if entry["source_cohort"] is not None:
+            cache_entry["source_cohort"] = entry["source_cohort"]
+        entries.append(cache_entry)
+    source_cohort_split_counts = {}
+    for entry in pairs.values():
+        cohort = entry["source_cohort"]
+        if cohort is None:
+            continue
+        counts = source_cohort_split_counts.setdefault(cohort, {split: 0 for split in ("train", "val", "test")})
+        counts[entry["split"]] += 1
     cache = {"format": 4, "settings": cache_settings(cfg), "entries": entries,
              "split_assignments": dict(sorted(groups.items())), "split_counts": split_counts}
+    if source_cohort_split_counts:
+        cache["source_cohort_split_counts"] = source_cohort_split_counts
     atomic_write(output / "index.json", lambda f: f.write(json.dumps(cache).encode()))
     return split_counts["train"]
 
