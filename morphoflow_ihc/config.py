@@ -13,6 +13,7 @@ class Config:
     crop: int = 256
     region: int = 32
     reward_region: int | None = None
+    ihc_target_mode: str = "unpaired_same_marker"
     context: int = 128
     overlap: int = 64
     channels: int = 32
