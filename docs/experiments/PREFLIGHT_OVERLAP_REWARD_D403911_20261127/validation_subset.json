@@ -1,0 +1,32 @@
+[
+  {
+    "group": "31M2101871",
+    "filename": "31M2101871_6_23.jpg",
+    "he": "datasets\\MIST_HER2\\valA\\31M2101871\\31M2101871_6_23.jpg",
+    "ihc": "datasets\\MIST_HER2\\valB\\31M2101871\\31M2101871_6_23.jpg"
+  },
+  {
+    "group": "46M2101353",
+    "filename": "46M2101353_15_7.jpg",
+    "he": "datasets\\MIST_HER2\\valA\\46M2101353\\46M2101353_15_7.jpg",
+    "ihc": "datasets\\MIST_HER2\\valB\\46M2101353\\46M2101353_15_7.jpg"
+  },
+  {
+    "group": "68M2100640",
+    "filename": "68M2100640_14_13.jpg",
+    "he": "datasets\\MIST_HER2\\valA\\68M2100640\\68M2100640_14_13.jpg",
+    "ihc": "datasets\\MIST_HER2\\valB\\68M2100640\\68M2100640_14_13.jpg"
+  },
+  {
+    "group": "19M2102438",
+    "filename": "19M2102438_11_20.jpg",
+    "he": "datasets\\MIST_HER2\\valA\\19M2102438\\19M2102438_11_20.jpg",
+    "ihc": "datasets\\MIST_HER2\\valB\\19M2102438\\19M2102438_11_20.jpg"
+  },
+  {
+    "group": "6M2103024",
+    "filename": "6M2103024_5_8.jpg",
+    "he": "datasets\\MIST_HER2\\valA\\6M2103024\\6M2103024_5_8.jpg",
+    "ihc": "datasets\\MIST_HER2\\valB\\6M2103024\\6M2103024_5_8.jpg"
+  }
+]
