@@ -164,7 +164,7 @@ def test_cli_pipeline(tmp_path):
     config.write_text(json.dumps({"crop": 32, "region": 8, "context": 16, "overlap": 8,
                                   "channel_mult": [1, 1], "ode_steps": 4, "action_step": 2}))
     cfg = Config(**json.loads(config.read_text()))
-    yy, xx = np.mgrid[:39, :41]
+    yy, xx = np.mgrid[:40, :42]
     h = 0.2 + 0.6 * np.exp(-((yy - 20) ** 2 + (xx - 19) ** 2) / 48)
     d = ((yy - 20) ** 2 + (xx - 19) ** 2 < 36).astype(float) * 0.7
     for marker in ("HER2", "KI67"):
@@ -212,7 +212,7 @@ def test_cli_pipeline(tmp_path):
     out, maps, evaluation = [str(tmp_path / x) for x in ("virtual.png", "maps.npz", "score.json")]
     main(["infer", "--checkpoint", rl, "--image", str(source), "--marker", "KI67", "--output", out,
           "--maps", maps, "--device", "cpu"])
-    assert Image.open(out).size == (41, 39)
+    assert Image.open(out).size == (42, 40)
     with np.load(maps) as data:
         assert np.isfinite(data["dab"]).all()
         assert data.files == ["dab"]
