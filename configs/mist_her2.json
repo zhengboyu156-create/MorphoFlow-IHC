@@ -3,7 +3,7 @@
     "HER2": 0.35
   },
   "pixel_size_um": 0.4661,
-  "crop": 256,
+  "crop": 512,
   "region": 32,
   "reward_region": 128,
   "flow_region": 64,

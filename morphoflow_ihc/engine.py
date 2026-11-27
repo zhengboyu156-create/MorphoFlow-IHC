@@ -224,14 +224,6 @@ def train_policy(args):
     print(json.dumps({"stage": "rl", "groups": groups, "target": args.groups, "file": str(args.output)}))
 
 
-def offsets(length, tile, stride):
-    last = max(0, length - tile)
-    result = list(range(0, last + 1, stride))
-    if result[-1] != last:
-        result.append(last)
-    return result
-
-
 @torch.no_grad()
 def infer(args):
     device = choose_device(args.device)
@@ -247,26 +239,18 @@ def infer(args):
     size = canonical_size(native_size, args.mpp if args.mpp is not None else cfg.pixel_size_um, cfg)
     scaled = source.resize(size, Image.Resampling.BILINEAR) if size != native_size else source
     rgb = np.asarray(scaled)
-    height, width = rgb.shape[:2]
-    tile = cfg.crop
-    padded_shape = max(height, tile), max(width, tile)
-    image = np.pad(rgb, ((0,padded_shape[0]-height),(0,padded_shape[1]-width),(0,0)), constant_values=255)
-    image = torch.from_numpy(image.copy()).permute(2,0,1).float() / 127.5 - 1
-    noise = torch.randn((3,*padded_shape), generator=torch.Generator().manual_seed(args.seed))
-    total = torch.zeros((3,*padded_shape))
-    weight_total = torch.zeros(padded_shape)
-    taper = torch.hann_window(tile, periodic=False).clamp_min(0.05)
-    blend = taper[:,None] * taper[None,:]
-    for y in offsets(height, tile, tile-cfg.overlap):
-        for x in offsets(width, tile, tile-cfg.overlap):
-            region = (slice(y,y+tile),slice(x,x+tile))
-            image_tile = image[:,region[0],region[1]][None].to(device)
-            noise_tile = noise[:,region[0],region[1]][None].to(device)
-            with precision(device):
-                estimate = sample_rgb(model, image_tile, marker, noise_tile, policy)
-            total[:,region[0],region[1]] += estimate.float().cpu()[0] * blend
-            weight_total[region] += blend
-    result = (total / weight_total)[:,:height,:width].permute(1,2,0).clamp(-1,1).numpy()
+    downsample_factor = 2 ** (len(cfg.channel_mult) - 1)
+    if rgb.shape[0] % downsample_factor or rgb.shape[1] % downsample_factor:
+        raise ValueError(
+            f"Full-image inference dimensions must be divisible by {downsample_factor}; "
+            f"got {rgb.shape[1]}x{rgb.shape[0]}. Use native 1024x1024 benchmark images."
+        )
+    image = torch.from_numpy(rgb.copy()).permute(2,0,1).float() / 127.5 - 1
+    image = image[None].to(device)
+    noise = torch.randn(image.shape[1:], generator=torch.Generator().manual_seed(args.seed))[None].to(device)
+    with precision(device):
+        estimate = sample_rgb(model, image, marker, noise, policy)
+    result = estimate.float().cpu()[0].permute(1,2,0).clamp(-1,1).numpy()
     rendered = Image.fromarray(np.rint((result + 1)*127.5).astype(np.uint8)).resize(native_size, Image.Resampling.BILINEAR)
     atomic_write(args.output, lambda stream: rendered.save(stream, format="PNG"))
     if args.maps:

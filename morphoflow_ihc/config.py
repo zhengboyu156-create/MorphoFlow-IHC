@@ -10,7 +10,9 @@ from pathlib import Path
 class Config:
     markers: dict[str, float] = field(default_factory=lambda: {"HER2": 0.35, "KI67": 0.35})
     pixel_size_um: float = 0.4661
-    crop: int = 256
+    # Match the MAPS-GAN training crop geometry. Native 1024px evaluation is
+    # performed as one full image by `infer`, without crop tiling.
+    crop: int = 512
     region: int = 32
     reward_region: int | None = None
     flow_region: int | None = None

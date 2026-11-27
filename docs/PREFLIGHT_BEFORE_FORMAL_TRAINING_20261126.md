@@ -120,7 +120,7 @@ python -m morphoflow_ihc train-rl \
 
 ## 6. 推理与评价小检查
 
-用验证集 H&E 测试基础流和策略流，固定 seed、MPP、marker、配置和 checkpoint。至少覆盖小于 tile、刚好 tile、非 tile 整数倍以及有重叠 tile 的图像；确认输出宽高等于输入原图，像素有限，边缘无未覆盖区域，重叠区无明显接缝。相同权重和 seed 应可复现；跨设备仅要求在预先定义的容差内一致。
+用保留测试集 H&E 测试基础流和策略流，固定 seed、MPP、marker、配置和 checkpoint。MAPS 对齐评测使用原生 1024×1024 全图一次推理，不切 tile、不中心裁剪；确认输出尺寸等于输入原图且像素有限。相同权重和 seed 应可复现；跨设备仅要求在预先定义的容差内一致。512 px 训练裁块及 1024 px 整图推理的显存和吞吐需要按目标 GPU 单独记录；此前 256 px tiled 推理的检查不覆盖这组设置。
 
 ```bash
 python -m morphoflow_ihc infer --checkpoint runs/preflight/policy.pt \

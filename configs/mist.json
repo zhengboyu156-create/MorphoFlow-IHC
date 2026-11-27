@@ -4,7 +4,7 @@
     "KI67": 0.35
   },
   "pixel_size_um": 0.4661,
-  "crop": 256,
+  "crop": 512,
   "region": 32,
   "context": 128,
   "overlap": 64,

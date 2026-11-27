@@ -42,7 +42,7 @@ def main(argv=None):
     preparation.add_argument("--output", type=Path, required=True)
 
     flow = sub.add_parser("train", help="Train paired conditional RGB flow and morphology objectives")
-    training_options(flow, 20.0, 4)
+    training_options(flow, 20.0, 1)
     flow.add_argument("--config", type=Path, required=True)
     flow.add_argument("--epochs", type=positive_int, default=25)
     flow.add_argument("--steps", type=positive_int)

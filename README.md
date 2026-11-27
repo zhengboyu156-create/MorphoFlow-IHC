@@ -20,6 +20,8 @@ ihc/p002.png,HER2,slide-02,IHC,val,pair-002,0.4661
 
 ## Paired training
 
+The MAPS-aligned image geometry is **512×512 shared-coordinate random crops for training, batch size 1, and native 1024×1024 full-image inference for evaluation**. Inference runs once over the complete canonical image; it does not tile, overlap-blend, center-crop, or resize the benchmark image when its MPP already matches the configured pixel size. This aligns input geometry with MAPS-GAN while retaining MorphoFlow's separate flow/PPO schedule. See [the protocol note](docs/MAPS_PROTOCOL_ADAPTATION_20261127.md) for exact scope and the already-running 256-crop experiment provenance.
+
 - **Regionally tolerant conditional flow matching** interpolates Gaussian noise and paired IHC while conditioning on paired H&E and marker. Instead of pixelwise velocity MSE, it compares predicted and target velocity averages in 64 px regions over four half-window grid phases (`flow_region`).
 - **Three-term generator objective** combines regional conditional flow matching, CUT-style PatchNCE, and an IHC-only marker-conditioned PatchGAN objective. PatchNCE uses same-position H&E/generated features as positives and other positions as negatives. The discriminator receives IHC RGB and marker only, avoiding a local H&E/IHC registration cue.
 - **Segmentation-free morphology** projects H&E and IHC RGB into canonical hematoxylin structure before matching. A residual CNN with top-down FPN fusion extracts local features and three heuristic H/edge/context weights. They are not learned cell compartments or segmentation outputs. DAB is not passed to this structure encoder.
@@ -52,4 +54,4 @@ python -m morphoflow_ihc infer --checkpoint runs/rgb_flow.pt --image data/he.png
 python -m pytest -q
 ```
 
-The command writes paired RGB training caches (format 4); older unpaired caches are rejected. The current generator uses three terms: regional CFM, PatchNCE, and adversarial loss. Checkpoint format 9 records the regional flow objective and IHC-only PatchGAN; checkpoints from earlier objectives are rejected. Start joint policy training from a base flow checkpoint to initialize the policy and optimizer state.
+The command writes paired RGB training caches (format 4); older unpaired caches are rejected. Caches store full canonical images, so changing the crop from 256 to 512 does not require rebuilding a cache if its marker, stain vectors, pixel spacing, and source images are unchanged. The current generator uses three terms: regional CFM, PatchNCE, and adversarial loss. Checkpoint format 9 records the regional flow objective and IHC-only PatchGAN; checkpoints from earlier objectives are rejected. Start joint policy training from a base flow checkpoint to initialize the policy and optimizer state.
