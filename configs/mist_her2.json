@@ -5,6 +5,7 @@
   "pixel_size_um": 0.4661,
   "crop": 256,
   "region": 32,
+  "reward_region": 128,
   "context": 128,
   "overlap": 64,
   "channels": 32,
