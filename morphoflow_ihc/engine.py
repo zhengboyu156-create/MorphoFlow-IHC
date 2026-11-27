@@ -56,6 +56,9 @@ def open_checkpoint(path, device):
     # `advantage_scale`; it is obsolete under the current reward-signal gate.
     config = dict(state["config"])
     config.pop("advantage_scale", None)
+    # Preserve the two-candidate behavior of pre-v4 policy checkpoints when resuming.
+    if state["stage"] == "rl" and "trajectory_candidates" not in config:
+        config["trajectory_candidates"] = 2
     model = StainFlow(Config(**config)).to(device)
     model.load_state_dict(state["model"])
     policy = None
