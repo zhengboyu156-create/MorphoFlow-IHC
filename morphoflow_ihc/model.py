@@ -48,9 +48,9 @@ class StainFlow(nn.Module):
         t, z, target_velocity = self.matcher.sample_location_and_conditional_flow(
             torch.randn_like(image), image
         )
-        # Paired conditional flow matching: the H&E crop conditions transport
-        # to its filename-paired IHC target. Pair IDs alone do not certify
-        # pixel registration.
+        # Conditional flow matching uses an independently sampled IHC target
+        # from the same marker pool. H&E structure is supervised separately,
+        # so this pixelwise transport target does not assume section registration.
         prediction = self.velocity(t, z, he, marker)
         flow_loss = F.mse_loss(prediction, target_velocity)
 
@@ -62,12 +62,12 @@ class StainFlow(nn.Module):
 
 
 class IHCCritic(nn.Module):
-    """Marker-conditioned paired PatchGAN adapted from official pix2pix."""
+    """Marker-conditioned IHC realism critic trained without spatial pairing."""
 
     def __init__(self, markers: int, base_channels: int = 32, layers: int = 3):
         super().__init__()
         self.markers = markers
-        input_channels = 6 + markers  # paired H&E/IHC plus a marker indicator map
+        input_channels = 3 + markers  # IHC RGB plus a marker indicator map
         sequence = [nn.Conv2d(input_channels, base_channels, 4, stride=2, padding=1),
                     nn.LeakyReLU(0.2, inplace=True)]
         nf_mult = 1
@@ -87,12 +87,10 @@ class IHCCritic(nn.Module):
                          nn.Conv2d(base_channels * nf_mult, 1, 4, stride=1, padding=1)))
         self.model = nn.Sequential(*sequence)
 
-    def forward(self, image, he, marker):
-        if image.shape != he.shape:
-            raise ValueError("Paired H&E and IHC critic inputs must have identical shapes")
+    def forward(self, image, marker):
         marker_map = F.one_hot(marker, num_classes=self.markers).to(image.dtype)
         marker_map = marker_map[:, :, None, None].expand(-1, -1, *image.shape[-2:])
-        return self.model(torch.cat((he.float(), image.float(), marker_map.float()), dim=1))
+        return self.model(torch.cat((image.float(), marker_map.float()), dim=1))
 
 
 class VelocityPolicy(nn.Module):
