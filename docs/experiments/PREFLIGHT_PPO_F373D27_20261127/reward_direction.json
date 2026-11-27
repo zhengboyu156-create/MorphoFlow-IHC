@@ -1,0 +1,104 @@
+{
+  "n_predictions": 10,
+  "spearman_reward_vs_negative_support_error": 0.8787878787878788,
+  "spearman_pvalue_descriptive": 0.0008138621117322102,
+  "observations": [
+    {
+      "group": "31M2101871",
+      "filename": "31M2101871_6_23.jpg",
+      "model": "base",
+      "reward": 0.47580796480178833,
+      "support_error": 0.36051782965660095
+    },
+    {
+      "group": "31M2101871",
+      "filename": "31M2101871_6_23.jpg",
+      "model": "policy",
+      "reward": 0.48792096972465515,
+      "support_error": 0.35211384296417236
+    },
+    {
+      "group": "46M2101353",
+      "filename": "46M2101353_15_7.jpg",
+      "model": "base",
+      "reward": 0.47039902210235596,
+      "support_error": 0.3885168433189392
+    },
+    {
+      "group": "46M2101353",
+      "filename": "46M2101353_15_7.jpg",
+      "model": "policy",
+      "reward": 0.47861072421073914,
+      "support_error": 0.3845117390155792
+    },
+    {
+      "group": "68M2100640",
+      "filename": "68M2100640_14_13.jpg",
+      "model": "base",
+      "reward": 0.5147625803947449,
+      "support_error": 0.2809394598007202
+    },
+    {
+      "group": "68M2100640",
+      "filename": "68M2100640_14_13.jpg",
+      "model": "policy",
+      "reward": 0.5239667892456055,
+      "support_error": 0.2814207077026367
+    },
+    {
+      "group": "19M2102438",
+      "filename": "19M2102438_11_20.jpg",
+      "model": "base",
+      "reward": 0.4478995203971863,
+      "support_error": 0.45627182722091675
+    },
+    {
+      "group": "19M2102438",
+      "filename": "19M2102438_11_20.jpg",
+      "model": "policy",
+      "reward": 0.45356813073158264,
+      "support_error": 0.4524368345737457
+    },
+    {
+      "group": "6M2103024",
+      "filename": "6M2103024_5_8.jpg",
+      "model": "base",
+      "reward": 0.45852088928222656,
+      "support_error": 0.47677409648895264
+    },
+    {
+      "group": "6M2103024",
+      "filename": "6M2103024_5_8.jpg",
+      "model": "policy",
+      "reward": 0.46766167879104614,
+      "support_error": 0.46799468994140625
+    }
+  ],
+  "paired_deltas": [
+    {
+      "pair": "31M2101871",
+      "reward_delta_policy_minus_base": 0.012113004922866821,
+      "support_error_delta_policy_minus_base": -0.008403986692428589
+    },
+    {
+      "pair": "46M2101353",
+      "reward_delta_policy_minus_base": 0.008211702108383179,
+      "support_error_delta_policy_minus_base": -0.004005104303359985
+    },
+    {
+      "pair": "68M2100640",
+      "reward_delta_policy_minus_base": 0.009204208850860596,
+      "support_error_delta_policy_minus_base": 0.0004812479019165039
+    },
+    {
+      "pair": "19M2102438",
+      "reward_delta_policy_minus_base": 0.005668610334396362,
+      "support_error_delta_policy_minus_base": -0.0038349926471710205
+    },
+    {
+      "pair": "6M2103024",
+      "reward_delta_policy_minus_base": 0.00914078950881958,
+      "support_error_delta_policy_minus_base": -0.008779406547546387
+    }
+  ]
+}
