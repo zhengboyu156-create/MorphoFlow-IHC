@@ -182,6 +182,12 @@ def train_policy(args):
     optimizer = torch.optim.AdamW(policy.parameters(), lr=policy_lr)
     groups = 0
     objective = args.objective
+    if objective == "direct":
+        # TorchCFM checkpoint backward is first-order only; direct reward
+        # optimization needs gradients through the generator a second time.
+        for module in model.net.modules():
+            if hasattr(module, "use_checkpoint"):
+                module.use_checkpoint = False
     if state["stage"] == "rl":
         if (state.get("policy_objective") or "ppo") != objective:
             raise ValueError("Start both objectives from the same base flow checkpoint")

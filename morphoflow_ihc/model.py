@@ -46,6 +46,9 @@ class StainFlow(nn.Module):
             num_res_blocks=cfg.residual_blocks,
             attention_resolutions=(),
             num_classes=len(cfg.markers),
+            # 512px crops exceed the 2080 Ti memory budget without recomputing
+            # residual-block activations during backward.
+            use_checkpoint=True,
         )
         self.patch_encoder = LocalMorphologyFPN(cfg.morphology_width, cfg.morphology_channels)
         self.patch_sampler = PatchSampleF(cfg.morphology_channels, cfg.patch_projection_dim)
