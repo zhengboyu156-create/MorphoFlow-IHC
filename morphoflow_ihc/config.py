@@ -37,6 +37,7 @@ class Config:
     velocity_limit: float = 0.10
     velocity_rms_floor: float = 0.05
     min_reward_spread: float = 1e-5
+    trajectory_candidates: int = 4
     ppo_clip: float = 0.15
     kl_limit: float = 0.02
     flow_lr: float = 0.0002
@@ -83,6 +84,8 @@ class Config:
                     *self.markers.values())
         if any(not math.isfinite(value) or value <= 0 for value in positive):
             raise ValueError("Physical and optimization scales must be finite and positive")
+        if isinstance(self.trajectory_candidates, bool) or self.trajectory_candidates < 2:
+            raise ValueError("trajectory_candidates must be an integer of at least two")
         if not 0 <= self.intensity_weight <= 1 or not 0 < self.ppo_clip < 1:
             raise ValueError("Invalid reward or PPO weight")
         for name in ("stain_h", "stain_e", "stain_d"):
