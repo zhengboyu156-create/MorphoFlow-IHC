@@ -84,7 +84,9 @@ class Config:
                     *self.markers.values())
         if any(not math.isfinite(value) or value <= 0 for value in positive):
             raise ValueError("Physical and optimization scales must be finite and positive")
-        if isinstance(self.trajectory_candidates, bool) or self.trajectory_candidates < 2:
+        if (not isinstance(self.trajectory_candidates, int)
+                or isinstance(self.trajectory_candidates, bool)
+                or self.trajectory_candidates < 2):
             raise ValueError("trajectory_candidates must be an integer of at least two")
         if not 0 <= self.intensity_weight <= 1 or not 0 < self.ppo_clip < 1:
             raise ValueError("Invalid reward or PPO weight")
