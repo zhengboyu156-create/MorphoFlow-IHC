@@ -12,6 +12,7 @@ class Config:
     pixel_size_um: float = 0.4661
     crop: int = 256
     region: int = 32
+    reward_region: int | None = None
     context: int = 128
     overlap: int = 64
     channels: int = 32
@@ -53,6 +54,11 @@ class Config:
             raise ValueError("Invalid U-Net width or depth")
         if self.region < 4 or self.crop < 16 or self.crop % self.region:
             raise ValueError("crop must be divisible by region (at least 4 pixels)")
+        if self.reward_region is None:
+            self.reward_region = min(128, self.crop)
+        if (self.reward_region < self.region or self.reward_region > self.crop
+                or self.crop % self.reward_region or self.reward_region % self.region):
+            raise ValueError("reward_region must be a region-aligned divisor of crop, at least region")
         if self.crop % (2 ** (len(self.channel_mult) - 1)):
             raise ValueError("crop is incompatible with U-Net downsampling")
         if self.context <= self.region or self.context % self.region:
