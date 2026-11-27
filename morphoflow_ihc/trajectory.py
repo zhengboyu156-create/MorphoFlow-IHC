@@ -10,9 +10,20 @@ from torchdiffeq import odeint
 
 
 
+def regional_average(values, window):
+    """Average over overlapping windows to reduce fixed-grid phase sensitivity.
+
+    Half-window stride makes nearby serial-section shifts affect adjacent
+    regions gradually instead of abruptly crossing a non-overlapping cell edge.
+    This is regional tolerance, not a substitute for image registration.
+    """
+    stride = max(1, window // 2)
+    return F.avg_pool2d(values.float(), kernel_size=window, stride=stride)
+
+
 def window_mean(values, selection, window):
-    count = F.avg_pool2d(selection.float(), window)
-    values = F.avg_pool2d(values.float() * selection, window) / count.clamp_min(1e-8)
+    count = regional_average(selection.float(), window)
+    values = regional_average(values.float() * selection, window) / count.clamp_min(1e-8)
     present = count > 0
     result = (values * present).flatten(1).sum(1) / present.flatten(1).sum(1).clamp_min(1)
     return result, present.flatten(1).any(1)
@@ -89,8 +100,8 @@ def paired_expression_reward(model, generated, reference, marker):
     thresholds = generated.new_tensor(list(cfg.markers.values()))[marker].view(-1, 1, 1, 1)
     predicted_support = torch.sigmoid((estimated - thresholds) / 0.05)
     target_support = (target > thresholds).float()
-    predicted_fraction = F.avg_pool2d(predicted_support, window)
-    target_fraction = F.avg_pool2d(target_support, window)
+    predicted_fraction = regional_average(predicted_support, window)
+    target_fraction = regional_average(target_support, window)
     # Include empty/background windows so extra DAB outside tissue is penalized.
     active = target_fraction > 0.01
 
@@ -105,8 +116,8 @@ def paired_expression_reward(model, generated, reference, marker):
 
     support_error = balanced_error((predicted_fraction - target_fraction).abs())
 
-    predicted_amount = F.avg_pool2d(estimated, window)
-    target_amount = F.avg_pool2d(target, window)
+    predicted_amount = regional_average(estimated, window)
+    target_amount = regional_average(target, window)
     amount_error = balanced_error((predicted_amount - target_amount).abs())
     amount_score = torch.exp(-amount_error / thresholds.flatten(1)[:, 0].clamp_min(1e-6))
     support_score = (1 - support_error).clamp(0, 1)
