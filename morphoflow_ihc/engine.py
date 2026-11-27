@@ -283,7 +283,8 @@ def evaluate(args, cfg):
     tau = list(cfg.markers.values())[cfg.marker_id(args.marker)]
     region = cfg.region
     height, width = estimated.shape
-    pad = (0, -width % region, 0, -height % region)
+    # Pad for the coarser reward scale; it is also divisible by `region`.
+    pad = (0, -width % cfg.reward_region, 0, -height % cfg.reward_region)
     estimate, actual = (F.pad(torch.from_numpy(a.astype(np.float32))[None, None], pad) for a in (estimated, true_dab))
     seen = F.pad(torch.from_numpy(tissue)[None, None], pad)
     if not seen.any():
@@ -296,10 +297,17 @@ def evaluate(args, cfg):
         "region_support_fraction_mae": (phases[0] - phases[1]).abs()[count > 0].mean().item(),
         "reference_tissue_fraction": seen.float().sum().item() / (height * width),
     }
+    reward_count = regional_average(seen.float(), cfg.reward_region)
+    reward_phases = [regional_average(((a > tau) & seen).float(), cfg.reward_region)
+                     / reward_count.clamp_min(1e-8) for a in (estimate, actual)]
+    metrics["reward_region_px"] = cfg.reward_region
+    metrics["reward_region_support_fraction_mae"] = (
+        (reward_phases[0] - reward_phases[1]).abs()[reward_count > 0].mean().item()
+    )
     if args.same_section:
         metrics["pixel_dab_mae"] = (estimate - actual).abs()[seen].mean().item()
         metrics["pixel_support_reward"] = terminal_reward(
-            estimate, actual, seen, torch.tensor([[[[tau]]]]), region, cfg.intensity_weight
+            estimate, actual, seen, torch.tensor([[[[tau]]]]), cfg.reward_region, cfg.intensity_weight
         ).item()
     report = json.dumps(metrics, indent=2, allow_nan=False)
     if args.output:
