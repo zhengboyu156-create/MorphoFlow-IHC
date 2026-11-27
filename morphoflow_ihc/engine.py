@@ -56,6 +56,17 @@ def make_grad_scaler(device, mode="auto"):
     return torch.cuda.amp.GradScaler()
 
 
+def disable_unet_checkpointing_for_fp16(model, device, mode="auto"):
+    if amp_dtype(device, mode) != torch.float16:
+        return 0
+    disabled = 0
+    for module in model.net.modules():
+        if getattr(module, "use_checkpoint", False):
+            module.use_checkpoint = False
+            disabled += 1
+    return disabled
+
+
 def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_optimizer=None, policy_objective=None,
                     flow_optimizer=None, scaler=None):
     state = {
@@ -191,6 +202,7 @@ def train_flow(args, cfg):
         if state["stage"] != "flow" or model.cfg != cfg:
             raise ValueError("Resume requires a flow checkpoint with the same model configuration")
         step = state["step"]
+    checkpointed_blocks = disable_unet_checkpointing_for_fp16(model, device, args.amp)
     optimizer, critic_optimizer = flow_optimizers(model)
     if args.resume:
         optimizer.load_state_dict(state["optimizer"])
@@ -200,6 +212,8 @@ def train_flow(args, cfg):
     dataset = IHCCrops(args.cache, cfg)
     loader = make_loader(dataset, args.batch, args.workers, device)
     target = args.steps or args.epochs * len(loader)
+    print(json.dumps({"stage": "flow", "event": "start", "step": step, "target": target,
+                      "amp": args.amp, "checkpointed_blocks_disabled": checkpointed_blocks}), flush=True)
     deadline = None if args.no_time_limit else time.monotonic() + 3600 * args.hours
     for pack in batches(loader):
         if step >= target or (deadline is not None and time.monotonic() >= deadline):
@@ -222,6 +236,7 @@ def train_policy(args):
     torch.manual_seed(args.seed)
     model, policy, state = open_checkpoint(args.checkpoint, device)
     scaler = make_grad_scaler(device, args.amp)
+    checkpointed_blocks = disable_unet_checkpointing_for_fp16(model, device, args.amp)
     if scaler is not None and "grad_scaler" in state:
         scaler.load_state_dict(state["grad_scaler"])
     cfg = model.cfg
@@ -255,6 +270,8 @@ def train_policy(args):
     dataset = IHCCrops(args.cache, cfg)
     loader = make_loader(dataset, args.batch, args.workers, device)
     target_groups = args.groups if args.groups is not None else args.epochs * len(dataset)
+    print(json.dumps({"stage": "rl", "event": "start", "groups": groups, "target": target_groups,
+                      "amp": args.amp, "checkpointed_blocks_disabled": checkpointed_blocks}), flush=True)
     next_save = groups + args.save_every
     deadline = None if args.no_time_limit else time.monotonic() + 3600 * args.hours
     for pack in batches(loader):
