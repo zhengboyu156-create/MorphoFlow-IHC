@@ -11,6 +11,28 @@ from .morphology import LocalMorphologyFPN, morphology_channels
 from .patchnce import PatchSampleF, paired_patchnce
 
 
+def regional_velocity_mse(prediction, target, window):
+    """Four-phase regional CFM loss with valid-area weighting at image edges."""
+    if prediction.shape != target.shape or prediction.ndim != 4:
+        raise ValueError("CFM velocity tensors must have identical BCHW shapes")
+    batch, channels, height, width = prediction.shape
+    half = max(1, window // 2)
+    losses = []
+    for top, left in ((0, 0), (0, half), (half, 0), (half, half)):
+        bottom = (-(height + top)) % window
+        right = (-(width + left)) % window
+        pad = (left, right, top, bottom)
+        valid = F.pad(prediction.new_ones((1, 1, height, width), dtype=torch.float32), pad)
+        counts = F.avg_pool2d(valid, window, stride=window) * (window * window)
+        pred_sum = F.avg_pool2d(F.pad(prediction.float(), pad), window, stride=window) * (window * window)
+        target_sum = F.avg_pool2d(F.pad(target.float(), pad), window, stride=window) * (window * window)
+        pred_mean = pred_sum / counts.clamp_min(1)
+        target_mean = target_sum / counts.clamp_min(1)
+        squared = (pred_mean - target_mean).square()
+        losses.append((squared * counts).sum() / (counts.sum() * batch * channels).clamp_min(1))
+    return torch.stack(losses).mean()
+
+
 class StainFlow(nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
@@ -48,11 +70,11 @@ class StainFlow(nn.Module):
         t, z, target_velocity = self.matcher.sample_location_and_conditional_flow(
             torch.randn_like(image), image
         )
-        # Paired conditional flow matching: the H&E crop conditions transport
-        # to its filename-paired IHC target. Pair IDs alone do not certify
-        # pixel registration.
         prediction = self.velocity(t, z, he, marker)
-        flow_loss = F.mse_loss(prediction, target_velocity)
+        # Pair crops can be locally misregistered. Supervise conditional
+        # velocity at regional scale over four grid phases. This preserves
+        # coarse spatial expression but does not imply cell-level matching.
+        flow_loss = regional_velocity_mse(prediction, target_velocity, self.cfg.flow_region)
 
         # Use the exact inference/rollout integrator so the policy-corrected
         # path used by PatchNCE and the critic is the path used at deployment.
@@ -62,12 +84,12 @@ class StainFlow(nn.Module):
 
 
 class IHCCritic(nn.Module):
-    """Marker-conditioned paired PatchGAN adapted from official pix2pix."""
+    """Marker-conditioned IHC-only PatchGAN for stain realism."""
 
     def __init__(self, markers: int, base_channels: int = 32, layers: int = 3):
         super().__init__()
         self.markers = markers
-        input_channels = 6 + markers  # paired H&E/IHC plus a marker indicator map
+        input_channels = 3 + markers  # IHC RGB plus marker indicator map
         sequence = [nn.Conv2d(input_channels, base_channels, 4, stride=2, padding=1),
                     nn.LeakyReLU(0.2, inplace=True)]
         nf_mult = 1
@@ -87,12 +109,10 @@ class IHCCritic(nn.Module):
                          nn.Conv2d(base_channels * nf_mult, 1, 4, stride=1, padding=1)))
         self.model = nn.Sequential(*sequence)
 
-    def forward(self, image, he, marker):
-        if image.shape != he.shape:
-            raise ValueError("Paired H&E and IHC critic inputs must have identical shapes")
+    def forward(self, image, marker):
         marker_map = F.one_hot(marker, num_classes=self.markers).to(image.dtype)
         marker_map = marker_map[:, :, None, None].expand(-1, -1, *image.shape[-2:])
-        return self.model(torch.cat((he.float(), image.float(), marker_map.float()), dim=1))
+        return self.model(torch.cat((image.float(), marker_map.float()), dim=1))
 
 
 class VelocityPolicy(nn.Module):

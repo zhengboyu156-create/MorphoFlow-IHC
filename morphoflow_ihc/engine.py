@@ -35,7 +35,7 @@ def precision(device):
 def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_optimizer=None, policy_objective=None,
                     flow_optimizer=None):
     state = {
-        "format": 8, "stage": stage, "step": step, "config": asdict(model.cfg),
+        "format": 9, "stage": stage, "step": step, "config": asdict(model.cfg),
         "model": model.state_dict(), "optimizer": optimizer.state_dict(),
     }
     if critic_optimizer is not None:
@@ -50,8 +50,8 @@ def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_opt
 
 def open_checkpoint(path, device):
     state = torch.load(path, map_location=device, weights_only=True)
-    if state.get("format") != 8 or state.get("stage") not in {"flow", "rl"}:
-        raise ValueError("This checkpoint predates paired PatchNCE/PatchGAN training. Train a new format 8 checkpoint")
+    if state.get("format") != 9 or state.get("stage") not in {"flow", "rl"}:
+        raise ValueError("Checkpoint uses a different flow/critic objective. Start a fresh format 9 run")
     # Checkpoints written before group-normalized PPO stored a fixed
     # `advantage_scale`; it is obsolete under the current reward-signal gate.
     config = dict(state["config"])
@@ -100,8 +100,8 @@ def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=No
     try:
         with precision(he.device):
             flow_loss, nce_loss, fake = model.losses(image, he, marker, policy=policy)
-            critic_loss = 0.5 * (F.softplus(-model.critic(image, he, marker)).mean()
-                                 + F.softplus(model.critic(fake.detach(), he, marker)).mean())
+            critic_loss = 0.5 * (F.softplus(-model.critic(image, marker)).mean()
+                                 + F.softplus(model.critic(fake.detach(), marker)).mean())
         if not torch.isfinite(critic_loss):
             raise FloatingPointError("Nonfinite critic loss")
         critic_loss.backward()
@@ -112,7 +112,7 @@ def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=No
         model.critic.requires_grad_(False)
         try:
             with precision(he.device):
-                adversarial_loss = F.softplus(-model.critic(fake, he, marker)).mean()
+                adversarial_loss = F.softplus(-model.critic(fake, marker)).mean()
                 loss = flow_loss + cfg.nce_weight * nce_loss + cfg.adversarial_weight * adversarial_loss
             if not torch.isfinite(loss):
                 raise FloatingPointError("Nonfinite flow training loss")

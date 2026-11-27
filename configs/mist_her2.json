@@ -6,6 +6,7 @@
   "crop": 256,
   "region": 32,
   "reward_region": 128,
+  "flow_region": 64,
   "trajectory_candidates": 4,
   "context": 128,
   "overlap": 64,

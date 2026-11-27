@@ -1,6 +1,6 @@
 # MorphoFlow-IHC — paired RGB flow prototype
 
-Experimental paired H&E → RGB IHC generation. This branch trains conditional flow matching on corresponding H&E/IHC crops and uses the paired IHC DAB map to score regional expression during trajectory optimization. **No pathology-level accuracy, convergence, or training-time guarantee has been established.**
+Experimental paired H&E → RGB IHC generation. The method uses paired images for regional expression supervision, without treating serial-section pixels as perfectly registered. Conditional flow matching compares 64 px region averages over four grid phases, the PatchGAN sees IHC and marker only, and PPO evaluates 128 px regional DAB support/amount over four phases. **This is regional supervision, not cell-level ground truth.**
 
 ## Training data
 
@@ -20,8 +20,8 @@ ihc/p002.png,HER2,slide-02,IHC,val,pair-002,0.4661
 
 ## Paired training
 
-- **Conditional flow matching** interpolates Gaussian noise and a real paired IHC crop while conditioning on its corresponding H&E crop and marker.
-- **Three-term generator objective** combines paired conditional flow matching, CUT-style PatchNCE, and a pix2pix-style paired PatchGAN objective. PatchNCE uses the same sampled spatial positions as positives and other positions from the same image as negatives; a small projection head adapts the fused morphology features. The PatchGAN sees H&E, IHC, and the marker indicator.
+- **Regionally tolerant conditional flow matching** interpolates Gaussian noise and paired IHC while conditioning on paired H&E and marker. Instead of pixelwise velocity MSE, it compares predicted and target velocity averages in 64 px regions over four half-window grid phases (`flow_region`).
+- **Three-term generator objective** combines regional conditional flow matching, CUT-style PatchNCE, and an IHC-only marker-conditioned PatchGAN objective. PatchNCE uses same-position H&E/generated features as positives and other positions as negatives. The discriminator receives IHC RGB and marker only, avoiding a local H&E/IHC registration cue.
 - **Segmentation-free morphology** projects H&E and IHC RGB into canonical hematoxylin structure before matching. A residual CNN with top-down FPN fusion extracts local features and three heuristic H/edge/context weights. They are not learned cell compartments or segmentation outputs. DAB is not passed to this structure encoder.
 - **Policy-guided joint training** uses PPO or a direct objective with a coarse regional DAB support/amount reward computed from the paired IHC. The MIST default pools 128 px ROIs (`reward_region`); the 32 px `region` remains the fine-scale diagnostic and policy-grid size. The reward updates the policy, then the current policy mean guides the rollout used by PatchNCE and adversarial generator losses; the policy parameters are held fixed during that generator step, and the reward itself is not added as a fourth generator term. Start `--objective ppo` and `--objective direct` from the same flow checkpoint for a matched comparison.
 - PPO samples four candidate trajectories per state by default and normalizes advantages within that candidate group. A group is skipped when its max–min reward spread is below `min_reward_spread` (default `1e-5`). The count is configurable as `trajectory_candidates`; more candidates increase the chance of observing a meaningful ranking without weakening the low-signal guard. Logs expose reward spread and informative-group fraction.
@@ -32,7 +32,7 @@ See the [logic audit](docs/LOGIC_AUDIT_20261126.md) for the verified train/updat
 
 Before a full run, follow the [pretraining preflight checklist](docs/PREFLIGHT_BEFORE_FORMAL_TRAINING_20261126.md): environment and data checks, loss/gradient tests, reward and policy checks, CUDA smoke training, and inference validation.
 
-The paired IHC image supplies a DAB proxy map during training; no manual cell masks or expression labels are required. The trajectory reward compares DAB support fraction and amount at the coarse `reward_region` scale (128 px by default) using four shifted grids of non-overlapping windows, then averages the phase scores. Each grid phase has no internal window overlap. Coarse pooling reduces sensitivity to local serial-section mismatch and phase averaging softens grid-origin effects; neither corrects large or nonrigid misregistration or identifies the exact positive cell. H&E-conditioned PatchNCE separately encourages structure preservation.
+The paired IHC image supplies a DAB proxy map during training; no manual cell masks or expression labels are required. CFM compares regional velocity averages at 64 px, while PPO compares DAB support fraction and amount at the coarse `reward_region` scale (128 px by default). Both use four shifted grid phases. This reduces sensitivity to small local shifts and grid-origin effects; it cannot correct large/nonrigid mismatch or identify the exact positive cell. H&E-conditioned PatchNCE separately encourages structure preservation.
 
 ## Setup and run
 
@@ -52,4 +52,4 @@ python -m morphoflow_ihc infer --checkpoint runs/rgb_flow.pt --image data/he.png
 python -m pytest -q
 ```
 
-The command writes paired RGB training caches (format 4); older unpaired caches are rejected. The current generator uses three terms: CFM, PatchNCE, and adversarial loss. Checkpoint format 8 records the paired PatchNCE projection and paired PatchGAN architecture; older checkpoints are rejected. Start joint policy training from a base flow checkpoint to initialize the policy and optimizer state.
+The command writes paired RGB training caches (format 4); older unpaired caches are rejected. The current generator uses three terms: regional CFM, PatchNCE, and adversarial loss. Checkpoint format 9 records the regional flow objective and IHC-only PatchGAN; checkpoints from earlier objectives are rejected. Start joint policy training from a base flow checkpoint to initialize the policy and optimizer state.

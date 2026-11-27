@@ -20,8 +20,8 @@ The main training path is now connected end to end: paired H&E/IHC data train a 
 
 ## Remaining scientific assumptions
 
-- The current data loader uses the same crop coordinates for filename-paired H&E and IHC. Serial sections can be misregistered or contain different cells. Consequently, pixelwise CFM targets and conditional H&E/IHC adversarial pairs can be wrong at cell scale. PatchNCE compares H&E with its own generated output, so it does not depend on reference-IHC registration. The regional policy reward is more tolerant, but still assumes local regions correspond. No code change can certify registration from filenames alone; evaluate registration or describe the method as paired-region supervision and avoid claiming exact-cell correspondence.
-- The paired DAB reward comes from the same IHC target used for CFM. It is a different, regional objective, not an independent biological label. It may complement pixelwise CFM but does not by itself prove a distinct source of supervision or policy benefit.
+- The data loader uses the same crop coordinates for filename-paired H&E and IHC, but serial sections can be locally misregistered. The revised CFM averages velocity targets over 64 px regions and four grid phases; the IHC-only critic no longer uses H&E/IHC pair structure. The 128 px PPO reward remains paired and regional. These choices reduce sensitivity to small local shifts but do not correct large/nonrigid displacement. Describe the method as paired-region supervision; do not claim exact-cell correspondence.
+- The paired DAB reward comes from the same IHC target used for CFM. It is a regional objective, not an independent biological label. Its reward-policy signal should be evaluated on held-out pairs before claiming policy benefit.
 - The soft morphology weights are heuristic functions of H concentration and edge strength. They are not learned or validated nuclear/membrane compartments.
 - No held-out performance, convergence, robustness or clinical HER2 conclusion follows from these implementation checks.
 

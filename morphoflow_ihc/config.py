@@ -13,6 +13,7 @@ class Config:
     crop: int = 256
     region: int = 32
     reward_region: int | None = None
+    flow_region: int = 64
     context: int = 128
     overlap: int = 64
     channels: int = 32
@@ -60,6 +61,9 @@ class Config:
         if (self.reward_region < self.region or self.reward_region > self.crop
                 or self.crop % self.reward_region or self.reward_region % self.region):
             raise ValueError("reward_region must be a region-aligned divisor of crop, at least region")
+        if (self.flow_region < self.region or self.flow_region > self.crop
+                or self.crop % self.flow_region or self.flow_region % self.region):
+            raise ValueError("flow_region must be a region-aligned divisor of crop, at least region")
         if self.crop % (2 ** (len(self.channel_mult) - 1)):
             raise ValueError("crop is incompatible with U-Net downsampling")
         if self.context <= self.region or self.context % self.region:
