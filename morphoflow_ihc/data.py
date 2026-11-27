@@ -177,6 +177,12 @@ class IHCCrops(Dataset):
         self.entries = index["entries"]
         if not self.entries:
             raise ValueError("Empty training cache")
+        self.marker_indices = {
+            marker: [i for i, item in enumerate(self.entries) if item["marker"] == marker]
+            for marker in self.cfg.markers
+        }
+        if any(not indices for indices in self.marker_indices.values()):
+            raise ValueError("Every configured marker needs an IHC target pool")
 
     def __len__(self):
         return len(self.entries)
@@ -186,6 +192,24 @@ class IHCCrops(Dataset):
         marker, size = item["marker"], self.cfg.crop
         ihc, he = self.paired_crop(item["ihc_file"], item["he_file"], size)
         return self.cfg.marker_id(marker), ihc, he
+
+    def sample_ihc(self, marker):
+        """Draw an independently sampled IHC crop from the requested marker pool."""
+        marker_name = tuple(self.cfg.markers)[int(marker)]
+        candidates = self.marker_indices[marker_name]
+        index = candidates[int(torch.randint(len(candidates), (1,)).item())]
+        item = self.entries[index]
+        with np.load(self.root / item["ihc_file"], allow_pickle=False) as source:
+            rgb = source["rgb"]
+        height, width = rgb.shape[:2]
+        size = self.cfg.crop
+        y = int(torch.randint(max(1, height - size + 1), (1,)).item())
+        x = int(torch.randint(max(1, width - size + 1), (1,)).item())
+        patch = rgb[y:y + size, x:x + size]
+        padding = ((0, size - patch.shape[0]), (0, size - patch.shape[1]), (0, 0))
+        patch = np.pad(patch, padding, constant_values=255)
+        tensor = torch.from_numpy(patch).permute(2, 0, 1).float() / 127.5 - 1
+        return tensor
 
     def paired_crop(self, ihc_file, he_file, size):
         with np.load(self.root / ihc_file, allow_pickle=False) as source:
