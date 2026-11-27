@@ -22,3 +22,7 @@
 ## Status at launch
 
 The first Flow update was logged with finite CFM, PatchNCE, critic, and adversarial losses. A new 48 MB checkpoint was saved, and the GPU showed active compute. No formal result claim is made until both training stages and full validation complete. Weights, images, and prediction arrays will remain off Git; logs, metrics, configuration, hashes, and provenance will be archived.
+
+## Superseding status — split audit
+
+This run was stopped at step 8,000 after confirming that the loader repartitioned all 5,642 MIST pairs across the archive's original `trainA/trainB` and `valA/valB` cohorts. The official authors specify 4,642 training and 1,000 testing pairs; 807 of those official test pairs were included in the 4,533-pair training cache. See `SPLIT_AUDIT.md`. Preserve the checkpoint and logs as provenance only; do not use this run as an official-split result or resume it for an official-protocol experiment.
