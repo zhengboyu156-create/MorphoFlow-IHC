@@ -205,7 +205,7 @@ def direct_policy_update(policy, optimizer, experience, cfg, scaler=None):
     (scaler.scale(loss) if scaler is not None else loss).backward()
     if scaler is not None:
         scaler.unscale_(optimizer)
-    torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0, error_if_nonfinite=True)
+    torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0, error_if_nonfinite=scaler is None)
     if scaler is not None:
         scaler.step(optimizer)
         scaler.update()

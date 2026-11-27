@@ -141,7 +141,8 @@ def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=No
         (scaler.scale(critic_loss) if scaler is not None else critic_loss).backward()
         if scaler is not None:
             scaler.unscale_(critic_optimizer)
-        torch.nn.utils.clip_grad_norm_(model.critic.parameters(), 1.0, error_if_nonfinite=True)
+        torch.nn.utils.clip_grad_norm_(model.critic.parameters(), 1.0,
+                                      error_if_nonfinite=scaler is None)
         if scaler is not None:
             scaler.step(critic_optimizer)
         else:
@@ -159,7 +160,7 @@ def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=No
             if scaler is not None:
                 scaler.unscale_(optimizer)
             parameters = [param for group in optimizer.param_groups for param in group["params"]]
-            torch.nn.utils.clip_grad_norm_(parameters, 1.0, error_if_nonfinite=True)
+            torch.nn.utils.clip_grad_norm_(parameters, 1.0, error_if_nonfinite=scaler is None)
             if scaler is not None:
                 scaler.step(optimizer)
                 scaler.update()
