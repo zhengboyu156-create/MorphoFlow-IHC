@@ -14,10 +14,10 @@
 
 - Config: `configs/mist_her2.json`, SHA-256 `e33a580361e04555922150e2779070135099bd356ed77c6f341c4b4ea9dc1c0d`.
 - Seed: 1234; batch size 1; workers 0.
-- Flow: fresh format-9 initialization, no resume, 20-hour budget; checkpoint `flow.pt`, save every 500 steps.
+- Flow: fresh format-9 initialization, no resume, 20-hour wall-time cap and default 25-epoch step cap; checkpoint `flow.pt`, save every 500 steps. With batch 1, the step cap is 113,325 updates (25 × 4,533 train pairs).
 - PPO: starts from this run's new `flow.pt`, 6-hour budget, seed 1234; `groups=1,000,000` is a ceiling so the time budget controls the stage; checkpoint `ppo.pt`, save every 500 groups.
 - Remote run directory: `/root/autodl-tmp/morphoflow_cebc690/runs/formal_mist_her2_format9_20261127_seed1234`.
-- Flow launch timestamp: `2026-11-27 19:10:09 +08:00`. Planned end of the two training stages is approximately `2026-11-28 21:10 +08:00`, before full validation; this estimate will be updated from observed throughput.
+- Flow launch timestamp: `2026-11-27 19:10:09 +08:00`. Steps 500 and 1,000 were logged at about 5:53 and 7:57 elapsed, respectively; the latest interval was about 4.0 updates/s. If that rate holds, the 25-epoch cap should finish near `2026-11-28 03:05 +08:00`, ahead of the 20-hour cap. PPO then has a six-hour time budget; provisional training completion is near `2026-11-28 09:05 +08:00`, before full validation. These are estimates and will be revised from later throughput.
 
 ## Status at launch
 
