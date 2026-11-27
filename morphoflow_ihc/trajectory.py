@@ -154,7 +154,7 @@ def collect(model, policy, he, reference, marker, *, direct=False):
     observation = policy.observation(he, state, base, model.morphology(he, "HE")[1])
     mean = policy(observation)
     dist = action_distribution(mean, cfg.action_std)
-    actions = dist.rsample((2,)) if direct else dist.sample((2,))
+    actions = dist.rsample((cfg.trajectory_candidates,)) if direct else dist.sample((cfg.trajectory_candidates,))
     log_prob = dist.log_prob(actions)
     dt = times[k + 1] - times[k]
     rewards = []
@@ -172,14 +172,15 @@ def action_kl(policy, observation, old_mean, cfg):
 
 
 def reward_group_stats(rewards, cfg):
-    """Summarize the two-candidate reward signal and flag near-ties."""
-    if rewards.ndim != 2 or rewards.shape[0] != 2:
-        raise ValueError("Policy updates require two candidate rewards per sample")
+    """Summarize within-state candidate rewards and flag near-ties."""
+    if rewards.ndim != 2 or rewards.shape[0] < 2:
+        raise ValueError("Policy updates require at least two candidate rewards per sample")
     if not torch.isfinite(rewards).all():
         raise FloatingPointError("Nonfinite trajectory reward")
-    spread = (rewards[0] - rewards[1]).abs()
+    spread = rewards.amax(dim=0) - rewards.amin(dim=0)
     informative = spread >= cfg.min_reward_spread
-    wins = (rewards[0] > rewards[1]).float() + 0.5 * (rewards[0] == rewards[1]).float()
+    best = rewards == rewards.amax(dim=0, keepdim=True)
+    wins = best.float() / best.sum(dim=0, keepdim=True).clamp_min(1)
     return informative, {
         "reward": rewards.mean().item(),
         "spread": spread.mean().item(),
@@ -217,7 +218,7 @@ def policy_update(policy, optimizer, experience, cfg, passes=2):
     observation, old_mean, actions, old_log_prob, rewards = experience
     informative, stats = reward_group_stats(rewards, cfg)
     stats.update({"accepted": 0, "policy_loss": 0.0, "kl": 0.0})
-    # Group-standardize each sample's two candidate returns. The minimum
+    # Group-standardize each sample's candidate returns. The minimum
     # spread gate prevents tiny numerical differences from becoming unit
     # advantages and driving a noisy policy update.
     advantage = rewards - rewards.mean(dim=0, keepdim=True)
