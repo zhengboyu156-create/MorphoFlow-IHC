@@ -289,21 +289,27 @@ def evaluate(args, cfg):
     seen = F.pad(torch.from_numpy(tissue)[None, None], pad)
     if not seen.any():
         raise ValueError("Reference contains no evaluable tissue")
-    count = regional_average(seen.float(), region)
-    phases = [regional_average(((a > tau) & seen).float(), region) / count.clamp_min(1e-8)
-              for a in (estimate, actual)]
+    def phase_support_error(window):
+        count_phases = regional_average(seen.float(), window)
+        support_phases = [regional_average(((a > tau) & seen).float(), window)
+                          for a in (estimate, actual)]
+        errors = []
+        for count, estimated_support, actual_support in zip(
+            count_phases, support_phases[0], support_phases[1]
+        ):
+            estimated_fraction = estimated_support / count.clamp_min(1e-8)
+            actual_fraction = actual_support / count.clamp_min(1e-8)
+            valid = count > 0
+            errors.append((estimated_fraction - actual_fraction).abs()[valid].mean())
+        return torch.stack(errors).mean().item()
+
     metrics = {
         "marker": args.marker.upper(), "threshold": tau, "region_px": region,
-        "region_support_fraction_mae": (phases[0] - phases[1]).abs()[count > 0].mean().item(),
+        "region_support_fraction_mae": phase_support_error(region),
         "reference_tissue_fraction": seen.float().sum().item() / (height * width),
     }
-    reward_count = regional_average(seen.float(), cfg.reward_region)
-    reward_phases = [regional_average(((a > tau) & seen).float(), cfg.reward_region)
-                     / reward_count.clamp_min(1e-8) for a in (estimate, actual)]
     metrics["reward_region_px"] = cfg.reward_region
-    metrics["reward_region_support_fraction_mae"] = (
-        (reward_phases[0] - reward_phases[1]).abs()[reward_count > 0].mean().item()
-    )
+    metrics["reward_region_support_fraction_mae"] = phase_support_error(cfg.reward_region)
     if args.same_section:
         metrics["pixel_dab_mae"] = (estimate - actual).abs()[seen].mean().item()
         metrics["pixel_support_reward"] = terminal_reward(

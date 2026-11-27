@@ -364,6 +364,21 @@ def test_paired_reward_is_smoother_to_small_section_shifts():
     assert exact.item() > small_shift.item() > large_shift.item()
 
 
+def test_regional_score_averages_shifted_nonoverlap_grids():
+    from morphoflow_ihc.trajectory import regional_average
+
+    image = torch.arange(64, dtype=torch.float32).view(1, 1, 8, 8)
+    phases = regional_average(image, 4)
+    assert len(phases) == 4
+    # Zero-offset phase has exactly four disjoint windows. Shifted phases add
+    # one padded edge cell per shifted axis, with no within-phase overlap.
+    assert phases[0].shape == (1, 1, 2, 2)
+    assert phases[1].shape == (1, 1, 2, 3)
+    assert phases[2].shape == (1, 1, 3, 2)
+    assert phases[3].shape == (1, 1, 3, 3)
+    assert phases[0][0, 0, 0, 0].item() == pytest.approx(13.5)
+
+
 def test_paired_reward_gradient_reaches_flow():
     from morphoflow_ihc.model import StainFlow
     from morphoflow_ihc.trajectory import paired_expression_reward, sample_rgb

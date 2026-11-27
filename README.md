@@ -32,7 +32,7 @@ See the [logic audit](docs/LOGIC_AUDIT_20261126.md) for the verified train/updat
 
 Before a full run, follow the [pretraining preflight checklist](docs/PREFLIGHT_BEFORE_FORMAL_TRAINING_20261126.md): environment and data checks, loss/gradient tests, reward and policy checks, CUDA smoke training, and inference validation.
 
-The paired IHC image supplies a DAB proxy map during training; no manual cell masks or expression labels are required. The trajectory reward compares DAB support fraction and amount in sliding `reward_region` windows at 50% overlap (128 px by default). Coarse pooling reduces sensitivity to local serial-section mismatch, and overlap softens grid-boundary effects. It cannot correct large or nonrigid misregistration or identify the exact positive cell. The reward is regional expression supervision; H&E-conditioned PatchNCE separately encourages structure preservation.
+The paired IHC image supplies a DAB proxy map during training; no manual cell masks or expression labels are required. The trajectory reward compares DAB support fraction and amount at the coarse `reward_region` scale (128 px by default) using four shifted grids of non-overlapping windows, then averages the phase scores. Each grid phase has no internal window overlap. Coarse pooling reduces sensitivity to local serial-section mismatch and phase averaging softens grid-origin effects; neither corrects large or nonrigid misregistration or identifies the exact positive cell. H&E-conditioned PatchNCE separately encourages structure preservation.
 
 ## Setup and run
 

@@ -11,22 +11,34 @@ from torchdiffeq import odeint
 
 
 def regional_average(values, window):
-    """Average over overlapping windows to reduce fixed-grid phase sensitivity.
+    """Return non-overlapping regional averages over four half-window offsets.
 
-    Half-window stride makes nearby serial-section shifts affect adjacent
-    regions gradually instead of abruptly crossing a non-overlapping cell edge.
-    This is regional tolerance, not a substitute for image registration.
+    Each grid uses stride == window. Averaging scores over shifted grid phases
+    reduces sensitivity to one arbitrary boundary without overlapping windows
+    inside any phase. This does not replace image registration.
     """
-    stride = max(1, window // 2)
-    return F.avg_pool2d(values.float(), kernel_size=window, stride=stride)
+    values = values.float()
+    height, width = values.shape[-2:]
+    half = max(1, window // 2)
+    phases = []
+    for top, left in ((0, 0), (0, half), (half, 0), (half, half)):
+        bottom = (-(height + top)) % window
+        right = (-(width + left)) % window
+        padded = F.pad(values, (left, right, top, bottom))
+        phases.append(F.avg_pool2d(padded, kernel_size=window, stride=window))
+    return phases
 
 
 def window_mean(values, selection, window):
-    count = regional_average(selection.float(), window)
-    values = regional_average(values.float() * selection, window) / count.clamp_min(1e-8)
-    present = count > 0
-    result = (values * present).flatten(1).sum(1) / present.flatten(1).sum(1).clamp_min(1)
-    return result, present.flatten(1).any(1)
+    counts = regional_average(selection.float(), window)
+    totals = regional_average(values.float() * selection, window)
+    results = []
+    for count, total in zip(counts, totals):
+        values = total / count.clamp_min(1e-8)
+        present = count > 0
+        result = (values * present).flatten(1).sum(1) / present.flatten(1).sum(1).clamp_min(1)
+        results.append((result, present.flatten(1).any(1)))
+    return results
 
 
 def terminal_reward(estimate, reference, tissue, tau, window, intensity_weight):
@@ -35,14 +47,17 @@ def terminal_reward(estimate, reference, tissue, tau, window, intensity_weight):
     positive = (reference > tau) & tissue
     low = (~positive) & tissue
     predicted = estimate > tau
-    hits, has_positive = window_mean(predicted, positive, window)
-    specificity, has_low = window_mean(~predicted, low, window)
-    error, _ = window_mean((estimate - reference).abs(), positive, window)
-    intensity = 1 / (1 + error / tau.flatten(1)[:, 0].clamp_min(1e-6))
-    balanced = (2 * hits * specificity) / (hits + specificity).clamp_min(1e-8)
-    support = torch.where(has_positive & has_low, balanced, torch.where(has_positive, hits, specificity))
-    amplitude = torch.where(has_positive, 1 - intensity_weight + intensity_weight * intensity, 1.0)
-    return (support * amplitude).clamp(0, 1)
+    hits = window_mean(predicted, positive, window)
+    specificity = window_mean(~predicted, low, window)
+    error = window_mean((estimate - reference).abs(), positive, window)
+    rewards = []
+    for (hit, has_positive), (specific, has_low), (amount_error, _) in zip(hits, specificity, error):
+        intensity = 1 / (1 + amount_error / tau.flatten(1)[:, 0].clamp_min(1e-6))
+        balanced = (2 * hit * specific) / (hit + specific).clamp_min(1e-8)
+        support = torch.where(has_positive & has_low, balanced, torch.where(has_positive, hit, specific))
+        amplitude = torch.where(has_positive, 1 - intensity_weight + intensity_weight * intensity, 1.0)
+        rewards.append((support * amplitude).clamp(0, 1))
+    return torch.stack(rewards).mean(0)
 
 
 def grid(model, z):
@@ -100,12 +115,13 @@ def paired_expression_reward(model, generated, reference, marker):
     thresholds = generated.new_tensor(list(cfg.markers.values()))[marker].view(-1, 1, 1, 1)
     predicted_support = torch.sigmoid((estimated - thresholds) / 0.05)
     target_support = (target > thresholds).float()
-    predicted_fraction = regional_average(predicted_support, window)
-    target_fraction = regional_average(target_support, window)
+    predicted_fractions = regional_average(predicted_support, window)
+    target_fractions = regional_average(target_support, window)
     # Include empty/background windows so extra DAB outside tissue is penalized.
-    active = target_fraction > 0.01
+    predicted_amounts = regional_average(estimated, window)
+    target_amounts = regional_average(target, window)
 
-    def balanced_error(error):
+    def balanced_error(error, active):
         positive = (error * active).flatten(1).sum(1) / active.flatten(1).sum(1).clamp_min(1)
         negative_mask = ~active
         negative = (error * negative_mask).flatten(1).sum(1) / negative_mask.flatten(1).sum(1).clamp_min(1)
@@ -114,15 +130,18 @@ def paired_expression_reward(model, generated, reference, marker):
         return torch.where(has_positive & has_negative, 0.5 * (positive + negative),
                            torch.where(has_positive, positive, negative))
 
-    support_error = balanced_error((predicted_fraction - target_fraction).abs())
-
-    predicted_amount = regional_average(estimated, window)
-    target_amount = regional_average(target, window)
-    amount_error = balanced_error((predicted_amount - target_amount).abs())
-    amount_score = torch.exp(-amount_error / thresholds.flatten(1)[:, 0].clamp_min(1e-6))
-    support_score = (1 - support_error).clamp(0, 1)
-    weight = cfg.intensity_weight
-    return ((1 - weight) * support_score + weight * amount_score).clamp(0, 1)
+    scores = []
+    for predicted_fraction, target_fraction, predicted_amount, target_amount in zip(
+        predicted_fractions, target_fractions, predicted_amounts, target_amounts
+    ):
+        active = target_fraction > 0.01
+        support_error = balanced_error((predicted_fraction - target_fraction).abs(), active)
+        amount_error = balanced_error((predicted_amount - target_amount).abs(), active)
+        amount_score = torch.exp(-amount_error / thresholds.flatten(1)[:, 0].clamp_min(1e-6))
+        support_score = (1 - support_error).clamp(0, 1)
+        weight = cfg.intensity_weight
+        scores.append(((1 - weight) * support_score + weight * amount_score).clamp(0, 1))
+    return torch.stack(scores).mean(0)
 
 
 def collect(model, policy, he, reference, marker, *, direct=False):
