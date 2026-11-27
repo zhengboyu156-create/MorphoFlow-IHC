@@ -16,6 +16,8 @@ This is an explicit schedule adaptation, not a claim that the two methods have i
 
 The MAPS-style LR factor stays at 1.0 through epoch 40, then follows the standard linear rule `1 - (decay_epoch / 11)` for the 10 decay epochs (10/11 down to 1/11 on epochs 41–50; the next epoch would be 0). The schedule is computed from completed global data passes, so resuming a checkpoint preserves its epoch position.
 
+Reference: [MAPS-GAN active V3 preset](https://github.com/zhengboyu156-create/MAPS-GAN-CGA-BES-CDM/blob/main/configs/active_method.json), [V3 protocol](https://github.com/zhengboyu156-create/MAPS-GAN-CGA-BES-CDM/blob/main/docs/ACTIVE_V3.md), and [MIST/BCI comparison protocol](https://github.com/zhengboyu156-create/MAPS-GAN-CGA-BES-CDM/blob/main/docs/experiments/BCI_MIST_HER2_BASELINE_PROTOCOL.md).
+
 ## Inference behavior
 
 `morphoflow_ihc infer` converts the input to canonical pixel spacing when `--mpp` differs from the configured spacing, then evaluates the entire canonical image in a single trajectory and restores the original output dimensions. For the MAPS-comparable MIST evaluation, use the native 1024×1024 source images at the configured 0.4661 μm/pixel spacing, so no scaling is applied. The implementation no longer uses `crop` or `overlap` to tile inference.
