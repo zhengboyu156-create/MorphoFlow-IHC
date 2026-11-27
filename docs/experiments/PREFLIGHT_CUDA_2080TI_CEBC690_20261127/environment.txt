@@ -1,0 +1,15 @@
+Repository branch: fix/regionally-tolerant-flow-training-20261127
+Repository commit: cebc69021da5b911dc7185127db9fb24239230a2
+GPU: NVIDIA GeForce RTX 2080 Ti, 11264 MiB
+Driver: 560.35.05 (CUDA Version 12.6); torch CUDA build cu118
+Python: 3.10.8
+PyTorch: 2.1.2+cu118
+pytest: 8.4.2
+TorchCFM: 1.0.7
+torchdiffeq: 0.2.5
+pluggy: 1.7.0
+POT: 0.9.7.post1
+NumPy: 1.26.4
+Pillow: 10.3.0
+Cache: 16 train pairs; 1 fixed validation pair; format 4
+Patient-level independence: not assessed / not claimed

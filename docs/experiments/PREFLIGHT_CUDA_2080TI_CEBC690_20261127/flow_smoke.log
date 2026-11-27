@@ -1,0 +1,11 @@
+{"stage": "flow", "step": 1, "flow_loss": 0.14591547846794128, "nce_loss": 4.811000347137451, "critic_loss": 0.7344242334365845, "adversarial_loss": 0.6691406965255737}
+{"stage": "flow", "step": 2, "flow_loss": 0.26101577281951904, "nce_loss": 4.557005405426025, "critic_loss": 0.6914026737213135, "adversarial_loss": 0.7919754981994629}
+{"stage": "flow", "step": 3, "flow_loss": 0.24334385991096497, "nce_loss": 4.535287857055664, "critic_loss": 0.6628415584564209, "adversarial_loss": 0.8734850883483887}
+{"stage": "flow", "step": 4, "flow_loss": 0.2369997352361679, "nce_loss": 4.41934061050415, "critic_loss": 0.6581912040710449, "adversarial_loss": 0.8976642489433289}
+{"stage": "flow", "step": 5, "flow_loss": 0.13021090626716614, "nce_loss": 4.313201427459717, "critic_loss": 0.6149482727050781, "adversarial_loss": 0.8976291418075562}
+{"stage": "flow", "step": 6, "flow_loss": 0.11333614587783813, "nce_loss": 4.2675347328186035, "critic_loss": 0.6042383909225464, "adversarial_loss": 0.8765140771865845}
+{"stage": "flow", "step": 7, "flow_loss": 0.1018717959523201, "nce_loss": 4.347472667694092, "critic_loss": 0.5438708066940308, "adversarial_loss": 0.8808034658432007}
+{"stage": "flow", "step": 8, "flow_loss": 0.2979108691215515, "nce_loss": 4.2141242027282715, "critic_loss": 0.5170081257820129, "adversarial_loss": 0.9048633575439453}
+{"stage": "flow", "step": 9, "flow_loss": 0.18987181782722473, "nce_loss": 4.166830062866211, "critic_loss": 0.5197005271911621, "adversarial_loss": 0.9327276349067688}
+{"stage": "flow", "step": 10, "flow_loss": 0.3826114535331726, "nce_loss": 4.176714897155762, "critic_loss": 0.45065221190452576, "adversarial_loss": 0.9796130657196045}
+{"stage": "flow", "step": 10, "target": 10, "file": "runs/preflight_2080ti_cebc690/flow.pt"}

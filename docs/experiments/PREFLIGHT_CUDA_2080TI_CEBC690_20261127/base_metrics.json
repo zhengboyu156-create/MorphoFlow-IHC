@@ -1,0 +1,9 @@
+{
+  "marker": "HER2",
+  "threshold": 0.35,
+  "region_px": 32,
+  "region_support_fraction_mae": 0.41739770770072937,
+  "reference_tissue_fraction": 0.9703359603881836,
+  "reward_region_px": 128,
+  "reward_region_support_fraction_mae": 0.4158664047718048
+}
