@@ -16,6 +16,13 @@ from morphoflow_ihc.stains import decompose, unit
 from morphoflow_ihc.trajectory import action_distribution, policy_update, terminal_reward
 
 
+def test_default_flow_region_fits_crop_and_preserves_64px_training_scale():
+    tiny = Config(crop=32, region=8, context=16, overlap=8, channel_mult=(1, 1))
+    standard = Config(crop=256, region=32)
+    assert tiny.flow_region == 32
+    assert standard.flow_region == 64
+
+
 def test_reward_rejects_uniform_typing_and_respects_absent_classes():
     target = torch.zeros(1, 1, 8, 8)
     target[:, :, :4, :4] = 0.8
@@ -216,15 +223,14 @@ def test_patchnce_reaches_rgb_generator_and_old_checkpoints_rejected(tmp_path):
     assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.patch_encoder.parameters())
     old = tmp_path / 'old.pt'
     torch.save({'format': 1, 'stage': 'flow'}, old)
-    with pytest.raises(ValueError, match='checkpoint'):
+    with pytest.raises(ValueError, match='(?i)checkpoint'):
         open_checkpoint(old, torch.device('cpu'))
     legacy = tmp_path / 'legacy-format-8.pt'
     legacy_config = asdict(cfg) | {'advantage_scale': 0.01}
     torch.save({'format': 8, 'stage': 'flow', 'config': legacy_config,
                 'model': model.state_dict()}, legacy)
-    reopened, policy, _ = open_checkpoint(legacy, torch.device('cpu'))
-    assert reopened.cfg.min_reward_spread == cfg.min_reward_spread
-    assert policy is None
+    with pytest.raises(ValueError, match='format 9'):
+        open_checkpoint(legacy, torch.device('cpu'))
 
 
 def test_rgb_dab_diagnostic_matches_numpy_decomposition():

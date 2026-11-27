@@ -13,7 +13,7 @@ class Config:
     crop: int = 256
     region: int = 32
     reward_region: int | None = None
-    flow_region: int = 64
+    flow_region: int | None = None
     context: int = 128
     overlap: int = 64
     channels: int = 32
@@ -61,6 +61,10 @@ class Config:
         if (self.reward_region < self.region or self.reward_region > self.crop
                 or self.crop % self.reward_region or self.reward_region % self.region):
             raise ValueError("reward_region must be a region-aligned divisor of crop, at least region")
+        if self.flow_region is None:
+            flow_regions = [size for size in range(self.region, min(64, self.crop) + 1, self.region)
+                            if self.crop % size == 0]
+            self.flow_region = max(flow_regions)
         if (self.flow_region < self.region or self.flow_region > self.crop
                 or self.crop % self.flow_region or self.flow_region % self.region):
             raise ValueError("flow_region must be a region-aligned divisor of crop, at least region")

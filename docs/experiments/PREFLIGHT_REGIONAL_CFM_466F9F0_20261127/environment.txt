@@ -1,0 +1,16 @@
+Source commit: 466f9f0f665490979b81482c12a6b861c3c44f13
+Branch checked out from: fix/regionally-tolerant-flow-training-20261127
+Python: 3.12.4
+PyTorch: 2.7.1+cu128
+pytest: 7.4.4
+GPU: NVIDIA GeForce RTX 5070 Ti, 16303 MiB
+GPU at inspection: 86% utilization, 7384 MiB used; another MAPS-V3 training process active
+Manifest: datasets/MIST_HER2/manifest.csv
+Manifest SHA-256: BD667A845DDF15071815C6F31A042D190ABC353ECF2C14F5CFC5F6D8C6695571
+Manifest rows excluding header: 11284
+Existing cache: format 4, train=4533, val=600, test=509
+Cache config settings match: true
+Train payloads present: 9066 / 9066
+Cache index contains manifest hash: false
+Patient-level independence verified: no; grouping remains source_prefix
+CUDA MorphoFlow smoke started: no
