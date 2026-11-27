@@ -1,13 +1,13 @@
 # Live training status
 
-Updated: 2026-11-27 19:27 +08:00 (remote host clock)
+Updated: 2026-11-27 19:28:51 +08:00 (remote host clock)
 
 - Branch: `fix/regionally-tolerant-flow-training-20261127`
 - Source code commit: `cebc69021da5b911dc7185127db9fb24239230a2`
 - Remote run directory: `/root/autodl-tmp/morphoflow_cebc690/runs/formal_mist_her2_format9_20261127_seed1234`
-- Stage: fresh Flow training; PID 1351 active (`Rl`, 95.8% CPU); GPU utilization 56%, 4,670 MiB used.
+- Stage: fresh Flow training; PID 1351 active (`Rl`, 97.2% CPU); GPU utilization 56%, 4,670 MiB used.
 - Progress: 2,500 / 113,325 updates; `flow.pt` checkpoint updated 19:27:04 +08:00, 49,690,081 bytes.
-- Runtime at observation: 16m55s from launch at 19:10:09 +08:00. Overall observed throughput is about 2.46 updates/s. If it holds, Flow ETA is approximately 2026-11-28 08:00 +08:00. PPO then has a 6-hour cap, giving a provisional end near 14:00 +08:00, before full validation. Estimates may shift with throughput.
+- Runtime at observation: 18m42s from launch at 19:10:09 +08:00. Overall observed throughput is about 2.23 updates/s. If it holds, Flow ETA is approximately 2026-11-28 09:17 +08:00. PPO then has a 6-hour cap, giving a provisional end near 15:17 +08:00, before full validation. Estimates may shift with throughput.
 
 Latest logged losses:
 
