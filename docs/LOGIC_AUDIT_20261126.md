@@ -14,8 +14,8 @@ The main training path is now connected end to end: paired H&E/IHC data train a 
 
 1. **CFM:** TorchCFM samples an interpolation between noise and paired IHC. The U-Net predicts velocity conditioned on the corresponding H&E crop and marker.
 2. **PatchNCE:** fixed stain-neutral morphology channels feed a trainable residual/FPN encoder. Shared sampled positions are positives; other sampled positions from the same image are negatives. The feature map is a structure proxy, not a segmentation or cell-type label.
-3. **PatchGAN:** the discriminator receives H&E, real/generated IHC and marker identity. Its own real/fake objective updates the discriminator; the generator's adversarial term differentiates through the discriminator into the generated image.
-4. **Policy:** PPO samples two corrections from a shared prefix/noise rollout and scores them with regional paired-reference DAB support/amount. The bounded score updates only the policy in that update.
+3. **PatchGAN:** the discriminator receives only real/generated IHC RGB and marker identity. Its own real/fake objective updates the discriminator; the generator's adversarial term differentiates through the discriminator into the generated image.
+4. **Policy:** PPO samples four corrections by default from a shared prefix/noise rollout and scores them with regional paired-reference DAB support/amount. The bounded score updates only the policy in that update. Older checkpoints without a stored candidate-count setting retain the legacy two-candidate behavior.
 5. **Generator feedback:** after the policy update, the next generator step uses the policy mean in the same rollout implementation as inference. Policy parameters are excluded from that optimizer step, but gradients through the corrected trajectory reach the velocity generator. CFM continues to train the base vector field; PatchNCE and adversarial terms train the policy-guided output. This closes the prior code gap where the policy was updated but omitted from generator rollouts.
 
 ## Remaining scientific assumptions
