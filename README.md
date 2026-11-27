@@ -32,7 +32,7 @@ See the [logic audit](docs/LOGIC_AUDIT_20261126.md) for the verified train/updat
 
 Before a full run, follow the [pretraining preflight checklist](docs/PREFLIGHT_BEFORE_FORMAL_TRAINING_20261126.md): environment and data checks, loss/gradient tests, reward and policy checks, CUDA smoke training, and inference validation.
 
-The paired IHC image supplies a DAB proxy map during training; no manual cell masks or expression labels are required. The trajectory reward compares DAB support fraction and amount in `region` windows, which is more tolerant to small section shifts than pixel reward. It still does not guarantee exact cell-level localization: paired serial sections may not have exact cell correspondence, and local registration must be assessed.
+The paired IHC image supplies a DAB proxy map during training; no manual cell masks or expression labels are required. The trajectory reward compares DAB support fraction and amount with sliding `region` windows at 50% overlap. This reduces sensitivity to an arbitrary non-overlapping grid boundary and makes nearby shifts change the score more smoothly than a pixelwise reward. It cannot correct large or nonrigid serial-section misregistration, nor guarantee cell-level localization; the learned reward remains a regional expression signal.
 
 ## Setup and run
 
