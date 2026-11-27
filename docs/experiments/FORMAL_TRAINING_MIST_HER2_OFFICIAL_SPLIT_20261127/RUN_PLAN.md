@@ -2,6 +2,7 @@
 
 ## Cohort and provenance
 
+- Split-loader source commit: `52e5c41e82d235a4892851e695d0be6f28ce022e`.
 - Upstream MIST HER2 cohort: 4,642 official training pairs and 1,000 official test pairs; the authors do not list a separate validation set.
 - The MAPS-GAN archive names the official test cohort `valA/valB`. The corrected loader maps it to `test`; no official test pair enters training.
 - Expected cache counts: 4,642 train / 0 validation / 1,000 test. The cache payload contains only the 4,642 official training pairs, and `source_cohort_split_counts` must show `official_test` only under `test`.
