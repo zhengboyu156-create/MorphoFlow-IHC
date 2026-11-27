@@ -64,6 +64,39 @@ def test_policy_accepts_small_update_and_rolls_back_large_update():
     torch.testing.assert_close(model(observation), current, rtol=0, atol=0)
 
 
+def test_tied_samples_do_not_dilute_informative_ppo_updates():
+    torch.manual_seed(44)
+    cfg = Config(rl_lr=1e-4)
+    initial = VelocityPolicy(cfg).state_dict()
+    observation = torch.rand(2, 12, 2, 2)
+    with torch.no_grad():
+        policy = VelocityPolicy(cfg)
+        policy.load_state_dict(initial)
+        mean = policy(observation)
+        noise = torch.randn(2, 2, *mean.shape[1:])
+        actions = mean.unsqueeze(0) + cfg.action_std * noise
+        log_prob = action_distribution(mean, cfg.action_std).log_prob(actions)
+        rewards = torch.tensor([[0.9, 0.5], [0.2, 0.5]])
+
+    def update(indices):
+        model = VelocityPolicy(cfg)
+        model.load_state_dict(initial)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.rl_lr)
+        experience = (observation[indices], mean[indices], actions[:, indices],
+                      log_prob[:, indices], rewards[:, indices])
+        result = policy_update(model, optimizer, experience, cfg, passes=1)
+        return model, result
+
+    informative_only, alone = update(torch.tensor([0]))
+    mixed_batch, mixed = update(torch.tensor([0, 1]))
+    assert alone["signal_fraction"] == 1
+    assert mixed["signal_fraction"] == 0.5
+    assert alone["accepted"] == mixed["accepted"] == 1
+    assert alone["kl"] == pytest.approx(mixed["kl"], rel=1e-5, abs=1e-8)
+    for expected, actual in zip(informative_only.parameters(), mixed_batch.parameters()):
+        torch.testing.assert_close(expected, actual, rtol=1e-5, atol=1e-7)
+
+
 def test_group_leakage_detected_before_reading_any_image(tmp_path):
     manifest = tmp_path / "images.csv"
     manifest.write_text("path,marker,group,domain,split,pair_id\n"
@@ -137,10 +170,12 @@ def test_cli_pipeline(tmp_path):
     base = ["train", "--cache", cache, "--config", cfg_path, "--output", flow, "--device", "cpu"]
     main(base + ["--steps", "1", "--batch", "2"])
     main(base + ["--steps", "2", "--resume", flow])
-    main(["train-rl", "--cache", cache, "--checkpoint", flow, "--output", rl, "--groups", "2", "--device", "cpu"])
+    main(["train-rl", "--cache", cache, "--checkpoint", flow, "--output", rl, "--groups", "2",
+          "--policy-lr", "0.0001", "--device", "cpu"])
     joint = torch.load(rl, weights_only=True)
     initial = torch.load(flow, weights_only=True)
     assert joint["step"] == 2
+    assert joint["optimizer"]["param_groups"][0]["lr"] == pytest.approx(0.0001)
     assert {"flow_optimizer", "critic_optimizer"} <= joint.keys()
     assert any(not torch.equal(value, initial["model"][name])
                for name, value in joint["model"].items() if name.startswith("net."))

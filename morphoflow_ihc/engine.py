@@ -175,7 +175,8 @@ def train_policy(args):
     critic_optimizer.load_state_dict(state["critic_optimizer"])
     if policy is None:
         policy = VelocityPolicy(cfg).to(device)
-    optimizer = torch.optim.AdamW(policy.parameters(), lr=cfg.rl_lr)
+    policy_lr = cfg.rl_lr if args.policy_lr is None else args.policy_lr
+    optimizer = torch.optim.AdamW(policy.parameters(), lr=policy_lr)
     groups = 0
     objective = args.objective
     if state["stage"] == "rl":
@@ -185,7 +186,7 @@ def train_policy(args):
         optimizer.load_state_dict(state["optimizer"])
         if args.policy_lr is not None:
             for group in optimizer.param_groups:
-                group["lr"] = cfg.rl_lr
+                group["lr"] = policy_lr
     dataset = IHCCrops(args.cache, cfg)
     loader = make_loader(dataset, args.batch, args.workers, device)
     next_save = groups + args.save_every

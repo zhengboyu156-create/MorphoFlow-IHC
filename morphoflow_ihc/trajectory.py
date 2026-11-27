@@ -202,13 +202,19 @@ def policy_update(policy, optimizer, experience, cfg, passes=2):
         optimizer.zero_grad(set_to_none=True)
         dist = action_distribution(policy(observation), cfg.action_std)
         ratio = (dist.log_prob(actions) - old_log_prob).clamp(-30, 30).exp()
-        loss = -torch.minimum(ratio * advantage, ratio.clamp(1 - cfg.ppo_clip, 1 + cfg.ppo_clip) * advantage).mean()
+        surrogate = torch.minimum(
+            ratio * advantage,
+            ratio.clamp(1 - cfg.ppo_clip, 1 + cfg.ppo_clip) * advantage,
+        )
+        # Tied samples are excluded from the signal fraction; they must also
+        # be excluded from the denominator, or they silently shrink updates.
+        loss = -surrogate[:, informative].mean()
         if not torch.isfinite(loss):
             raise FloatingPointError("Nonfinite trajectory policy loss")
         loss.backward()
         torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0, error_if_nonfinite=True)
         optimizer.step()
-        kl = action_kl(policy, observation, old_mean, cfg)
+        kl = action_kl(policy, observation[informative], old_mean[informative], cfg)
         stats["policy_loss"], stats["kl"] = loss.item(), kl.item()
         if not torch.isfinite(kl) or kl > cfg.kl_limit:
             policy.load_state_dict(before[0])
