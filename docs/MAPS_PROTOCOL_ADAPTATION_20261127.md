@@ -10,7 +10,11 @@
 | Evaluation inference | One full-image forward trajectory; no crop tiling/blending | Full-image evaluation |
 | Dataset cohort | Preserve official MIST split: 4,642 train / 1,000 test | Same MIST cohort definition |
 
-The MIST configuration and default Flow batch now use these geometry settings. PPO retains its own schedule and group-based update count; MAPS-GAN's 40+10 epoch schedule is not copied because MorphoFlow has a distinct two-stage Flow/PPO training procedure.
+The MIST configuration and default Flow batch use these geometry settings. The MAPS-GAN repository's current original-V3 preset specifies 40 constant-learning-rate epochs followed by 10 linearly decayed epochs. This experiment adapts that schedule to MorphoFlow's two stages as **40 Flow epochs + 10 PPO epochs**: Flow uses the base Flow/critic learning rates for its 40 passes; the 10 PPO passes update the policy, Flow, and critic together while all three learning rates decay linearly. With the official batch-1 train set, the targets are 185,680 Flow steps and 46,420 PPO groups.
+
+This is an explicit schedule adaptation, not a claim that the two methods have identical optimization cost. Each MorphoFlow PPO group samples four candidate trajectories and performs an additional joint Flow update, so its compute per paired sample differs from MAPS-GAN's generator/discriminator update. The previous 25-epoch Flow + 3,000-group PPO plan did **not** follow the reference schedule and is superseded.
+
+The MAPS-style LR factor stays at 1.0 through epoch 40, then follows the standard linear rule `1 - (decay_epoch / 11)` for the 10 decay epochs (10/11 down to 1/11 on epochs 41–50; the next epoch would be 0). The schedule is computed from completed global data passes, so resuming a checkpoint preserves its epoch position.
 
 ## Inference behavior
 

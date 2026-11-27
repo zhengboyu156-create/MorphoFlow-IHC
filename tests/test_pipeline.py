@@ -199,7 +199,7 @@ def test_cli_pipeline(tmp_path):
     joint = torch.load(rl, weights_only=True)
     initial = torch.load(flow, weights_only=True)
     assert joint["step"] == 2
-    assert joint["optimizer"]["param_groups"][0]["lr"] == pytest.approx(0.0001)
+    assert joint["optimizer"]["param_groups"][0]["lr"] == pytest.approx(0.0001 * 10 / 11)
     assert {"flow_optimizer", "critic_optimizer"} <= joint.keys()
     assert any(not torch.equal(value, initial["model"][name])
                for name, value in joint["model"].items() if name.startswith("net."))
@@ -222,6 +222,15 @@ def test_cli_pipeline(tmp_path):
     report = json.loads(open(evaluation).read())
     assert 0 <= report["region_support_fraction_mae"] <= 1
     assert "pixel_support_reward" not in report
+
+
+def test_maps_40_10_learning_rate_schedule():
+    from morphoflow_ihc.engine import maps_40_10_lr_factor
+    assert maps_40_10_lr_factor(0) == pytest.approx(1.0)
+    assert maps_40_10_lr_factor(39) == pytest.approx(1.0)
+    assert maps_40_10_lr_factor(40) == pytest.approx(10 / 11)
+    assert maps_40_10_lr_factor(49) == pytest.approx(1 / 11)
+    assert maps_40_10_lr_factor(50) == pytest.approx(0.0)
 
 
 def test_patchnce_reaches_rgb_generator_and_old_checkpoints_rejected(tmp_path):

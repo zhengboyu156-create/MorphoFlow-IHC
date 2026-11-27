@@ -48,7 +48,7 @@ def main(argv=None):
     flow = sub.add_parser("train", help="Train paired conditional RGB flow and morphology objectives")
     training_options(flow, 20.0, 1)
     flow.add_argument("--config", type=Path, required=True)
-    flow.add_argument("--epochs", type=positive_int, default=25)
+    flow.add_argument("--epochs", type=positive_int, default=40)
     flow.add_argument("--steps", type=positive_int)
     flow.add_argument("--resume", type=Path)
 
@@ -56,7 +56,8 @@ def main(argv=None):
     training_options(policy, 6.0, 1)
     policy.add_argument("--checkpoint", type=Path, required=True)
     policy.add_argument("--objective", choices=("ppo", "direct"), default="ppo")
-    policy.add_argument("--groups", type=positive_int, default=3000)
+    policy.add_argument("--epochs", type=positive_int, default=10)
+    policy.add_argument("--groups", type=positive_int)
     policy.add_argument("--policy-lr", type=duration, help="Explicit policy learning rate")
 
     prediction = sub.add_parser("infer", help="Generate native-size IHC from H&E and a marker")

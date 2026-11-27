@@ -86,6 +86,13 @@ def flow_optimizers(model):
             torch.optim.AdamW(model.critic.parameters(), lr=model.cfg.critic_lr))
 
 
+def maps_40_10_lr_factor(epoch_index, constant_epochs=40, decay_epochs=10):
+    """MAPS-style LR: hold through 40 epochs, then linearly decay over 10."""
+    if epoch_index < constant_epochs:
+        return 1.0
+    return max(0.0, 1.0 - (epoch_index - constant_epochs + 1) / (decay_epochs + 1))
+
+
 def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=None):
     cfg = model.cfg
     optimizer.zero_grad(set_to_none=True)
@@ -198,13 +205,23 @@ def train_policy(args):
                 group["lr"] = policy_lr
     dataset = IHCCrops(args.cache, cfg)
     loader = make_loader(dataset, args.batch, args.workers, device)
+    target_groups = args.groups if args.groups is not None else args.epochs * len(dataset)
     next_save = groups + args.save_every
     deadline = None if args.no_time_limit else time.monotonic() + 3600 * args.hours
     for pack in batches(loader):
-        if groups >= args.groups or (deadline is not None and time.monotonic() >= deadline):
+        if groups >= target_groups or (deadline is not None and time.monotonic() >= deadline):
             break
-        limit = args.groups - groups
+        limit = target_groups - groups
         marker, image, he = (value[:limit].to(device, non_blocking=True) for value in pack)
+        epoch_index = 40 + groups // len(dataset)
+        lr_factor = maps_40_10_lr_factor(epoch_index)
+        for optimizer, base_lr in (
+            (flow_optimizer, cfg.flow_lr),
+            (critic_optimizer, cfg.critic_lr),
+            (optimizer, policy_lr),
+        ):
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = base_lr * lr_factor
         direct = objective == "direct"
         # Keep this rollout's environment fixed through its policy update.
         model.eval().requires_grad_(False)
@@ -217,17 +234,18 @@ def train_policy(args):
             model.train().requires_grad_(True)
         stats.update(flow_update(model, flow_optimizer, critic_optimizer, image, he, marker, policy=policy))
         stats["objective"] = objective
+        stats["lr_factor"] = lr_factor
         groups += he.shape[0]
         if groups >= next_save or groups == args.groups or groups == he.shape[0]:
             save_checkpoint(args.output, model, optimizer, groups, "rl", policy, critic_optimizer=critic_optimizer,
                             policy_objective=objective, flow_optimizer=flow_optimizer)
             next_save = groups + args.save_every
             print(json.dumps({"stage": "rl", "groups": groups, **stats}), flush=True)
-        if groups >= args.groups or (deadline is not None and time.monotonic() >= deadline):
+        if groups >= target_groups or (deadline is not None and time.monotonic() >= deadline):
             break
     save_checkpoint(args.output, model, optimizer, groups, "rl", policy, critic_optimizer=critic_optimizer,
                             policy_objective=objective, flow_optimizer=flow_optimizer)
-    print(json.dumps({"stage": "rl", "groups": groups, "target": args.groups, "file": str(args.output)}))
+    print(json.dumps({"stage": "rl", "groups": groups, "target": target_groups, "file": str(args.output)}))
 
 
 @torch.no_grad()
