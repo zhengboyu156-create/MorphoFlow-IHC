@@ -34,6 +34,8 @@ def training_options(command, default_hours, default_batch):
         help="Run to the configured epoch or group target without an hours cap",
     )
     command.add_argument("--save-every", type=positive_int, default=500)
+    command.add_argument("--amp", choices=("auto", "fp32", "fp16", "bf16"), default="auto",
+                         help="Mixed precision mode; auto uses BF16 when supported, otherwise FP16 on CUDA")
 
 
 def main(argv=None):

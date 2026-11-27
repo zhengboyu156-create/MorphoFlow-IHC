@@ -10,6 +10,7 @@ import torch
 from morphoflow_ihc.cli import main
 from morphoflow_ihc.config import Config
 from morphoflow_ihc.data import IHCCrops, _manifest_rows, prepare
+from morphoflow_ihc.engine import amp_dtype
 from morphoflow_ihc.model import VelocityPolicy
 from morphoflow_ihc.morphology import LocalMorphologyFPN, hematoxylin_map, morphology_channels
 from morphoflow_ihc.stains import decompose, unit
@@ -231,6 +232,14 @@ def test_maps_40_10_learning_rate_schedule():
     assert maps_40_10_lr_factor(40) == pytest.approx(10 / 11)
     assert maps_40_10_lr_factor(49) == pytest.approx(1 / 11)
     assert maps_40_10_lr_factor(50) == pytest.approx(0.0)
+
+
+def test_amp_modes_keep_cpu_in_fp32_and_reject_cpu_half_precision():
+    cpu = torch.device("cpu")
+    assert amp_dtype(cpu, "auto") is None
+    assert amp_dtype(cpu, "fp32") is None
+    with pytest.raises(ValueError, match="requires CUDA"):
+        amp_dtype(cpu, "fp16")
 
 
 def test_patchnce_reaches_rgb_generator_and_old_checkpoints_rejected(tmp_path):

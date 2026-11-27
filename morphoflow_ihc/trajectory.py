@@ -190,7 +190,7 @@ def reward_group_stats(rewards, cfg):
     }
 
 
-def direct_policy_update(policy, optimizer, experience, cfg):
+def direct_policy_update(policy, optimizer, experience, cfg, scaler=None):
     observation, old_mean, _, _, rewards = experience
     informative, stats = reward_group_stats(rewards, cfg)
     stats.update({"accepted": 0, "policy_loss": 0.0, "kl": 0.0})
@@ -202,9 +202,15 @@ def direct_policy_update(policy, optimizer, experience, cfg):
     loss = -(rewards * mask).sum() / mask.expand_as(rewards).sum().clamp_min(1)
     if not torch.isfinite(loss):
         raise FloatingPointError("Nonfinite direct policy loss")
-    loss.backward()
+    (scaler.scale(loss) if scaler is not None else loss).backward()
+    if scaler is not None:
+        scaler.unscale_(optimizer)
     torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0, error_if_nonfinite=True)
-    optimizer.step()
+    if scaler is not None:
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        optimizer.step()
     kl = action_kl(policy, observation, old_mean.detach(), cfg)
     accepted = bool(torch.isfinite(kl) and kl <= cfg.kl_limit)
     if not accepted:

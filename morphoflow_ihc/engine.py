@@ -26,14 +26,38 @@ def choose_device(name):
     return device
 
 
-def precision(device):
-    if device.type == "cuda" and torch.cuda.is_bf16_supported():
-        return torch.autocast("cuda", dtype=torch.bfloat16)
-    return nullcontext()
+def amp_dtype(device, mode="auto"):
+    if mode not in {"auto", "fp32", "fp16", "bf16"}:
+        raise ValueError(f"Unsupported precision mode: {mode}")
+    if device.type != "cuda":
+        if mode in {"fp16", "bf16"}:
+            raise ValueError(f"{mode} autocast requires CUDA")
+        return None
+    if mode == "fp32":
+        return None
+    if mode == "bf16":
+        if not torch.cuda.is_bf16_supported():
+            raise ValueError("BF16 autocast is unsupported by this CUDA device")
+        return torch.bfloat16
+    if mode == "fp16":
+        return torch.float16
+    return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+
+def precision(device, mode="auto"):
+    dtype = amp_dtype(device, mode)
+    return torch.autocast("cuda", dtype=dtype) if dtype is not None else nullcontext()
+
+
+def make_grad_scaler(device, mode="auto"):
+    dtype = amp_dtype(device, mode)
+    if device.type != "cuda" or dtype != torch.float16:
+        return None
+    return torch.cuda.amp.GradScaler()
 
 
 def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_optimizer=None, policy_objective=None,
-                    flow_optimizer=None):
+                    flow_optimizer=None, scaler=None):
     state = {
         "format": 9, "stage": stage, "step": step, "config": asdict(model.cfg),
         "model": model.state_dict(), "optimizer": optimizer.state_dict(),
@@ -42,6 +66,8 @@ def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_opt
         state["critic_optimizer"] = critic_optimizer.state_dict()
     if flow_optimizer is not None:
         state["flow_optimizer"] = flow_optimizer.state_dict()
+    if scaler is not None and scaler.is_enabled():
+        state["grad_scaler"] = scaler.state_dict()
     if policy is not None:
         state["policy"] = policy.state_dict()
         state["policy_objective"] = policy_objective
@@ -93,8 +119,9 @@ def maps_40_10_lr_factor(epoch_index, constant_epochs=40, decay_epochs=10):
     return max(0.0, 1.0 - (epoch_index - constant_epochs + 1) / (decay_epochs + 1))
 
 
-def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=None):
+def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=None, scaler=None, amp="auto"):
     cfg = model.cfg
+    scale_before = scaler.get_scale() if scaler is not None and scaler.is_enabled() else None
     optimizer.zero_grad(set_to_none=True)
     critic_optimizer.zero_grad(set_to_none=True)
     policy_grad_state = [p.requires_grad for p in policy.parameters()] if policy is not None else None
@@ -105,28 +132,39 @@ def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=No
             parameter.grad = None
         policy.requires_grad_(False)
     try:
-        with precision(he.device):
+        with precision(he.device, amp):
             flow_loss, nce_loss, fake = model.losses(image, he, marker, policy=policy)
             critic_loss = 0.5 * (F.softplus(-model.critic(image, marker)).mean()
                                  + F.softplus(model.critic(fake.detach(), marker)).mean())
         if not torch.isfinite(critic_loss):
             raise FloatingPointError("Nonfinite critic loss")
-        critic_loss.backward()
+        (scaler.scale(critic_loss) if scaler is not None else critic_loss).backward()
+        if scaler is not None:
+            scaler.unscale_(critic_optimizer)
         torch.nn.utils.clip_grad_norm_(model.critic.parameters(), 1.0, error_if_nonfinite=True)
-        critic_optimizer.step()
+        if scaler is not None:
+            scaler.step(critic_optimizer)
+        else:
+            critic_optimizer.step()
         critic_optimizer.zero_grad(set_to_none=True)
 
         model.critic.requires_grad_(False)
         try:
-            with precision(he.device):
+            with precision(he.device, amp):
                 adversarial_loss = F.softplus(-model.critic(fake, marker)).mean()
                 loss = flow_loss + cfg.nce_weight * nce_loss + cfg.adversarial_weight * adversarial_loss
             if not torch.isfinite(loss):
                 raise FloatingPointError("Nonfinite flow training loss")
-            loss.backward()
+            (scaler.scale(loss) if scaler is not None else loss).backward()
+            if scaler is not None:
+                scaler.unscale_(optimizer)
             parameters = [param for group in optimizer.param_groups for param in group["params"]]
             torch.nn.utils.clip_grad_norm_(parameters, 1.0, error_if_nonfinite=True)
-            optimizer.step()
+            if scaler is not None:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
         finally:
             model.critic.requires_grad_(True)
     finally:
@@ -135,6 +173,9 @@ def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=No
                 parameter.requires_grad_(requires_grad)
     stats = {"flow_loss": flow_loss.item(), "nce_loss": nce_loss.item(),
              "critic_loss": critic_loss.item(), "adversarial_loss": adversarial_loss.item()}
+    if scale_before is not None:
+        stats["amp_scale"] = scaler.get_scale()
+        stats["amp_overflow"] = int(stats["amp_scale"] < scale_before)
     return stats
 
 
@@ -142,6 +183,7 @@ def train_flow(args, cfg):
     device = choose_device(args.device)
     torch.manual_seed(args.seed)
     model = StainFlow(cfg).to(device)
+    scaler = make_grad_scaler(device, args.amp)
     step = 0
     if args.resume:
         model, _, state = open_checkpoint(args.resume, device)
@@ -152,6 +194,8 @@ def train_flow(args, cfg):
     if args.resume:
         optimizer.load_state_dict(state["optimizer"])
         critic_optimizer.load_state_dict(state["critic_optimizer"])
+        if scaler is not None and "grad_scaler" in state:
+            scaler.load_state_dict(state["grad_scaler"])
     dataset = IHCCrops(args.cache, cfg)
     loader = make_loader(dataset, args.batch, args.workers, device)
     target = args.steps or args.epochs * len(loader)
@@ -160,14 +204,15 @@ def train_flow(args, cfg):
         if step >= target or (deadline is not None and time.monotonic() >= deadline):
             break
         marker, image, he = (value.to(device, non_blocking=True) for value in pack)
-        stats = flow_update(model, optimizer, critic_optimizer, image, he, marker)
+        stats = flow_update(model, optimizer, critic_optimizer, image, he, marker, scaler=scaler, amp=args.amp)
         step += 1
         if step == 1 or step % args.save_every == 0 or step == target:
-            save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer)
+            save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer,
+                            scaler=scaler)
             print(json.dumps({"stage": "flow", "step": step, **stats}), flush=True)
         if step >= target or (deadline is not None and time.monotonic() >= deadline):
             break
-    save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer)
+    save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer, scaler=scaler)
     print(json.dumps({"stage": "flow", "step": step, "target": target, "file": str(args.output)}))
 
 
@@ -175,6 +220,9 @@ def train_policy(args):
     device = choose_device(args.device)
     torch.manual_seed(args.seed)
     model, policy, state = open_checkpoint(args.checkpoint, device)
+    scaler = make_grad_scaler(device, args.amp)
+    if scaler is not None and "grad_scaler" in state:
+        scaler.load_state_dict(state["grad_scaler"])
     cfg = model.cfg
     if args.policy_lr is not None:
         cfg.rl_lr = args.policy_lr
@@ -226,25 +274,28 @@ def train_policy(args):
         # Keep this rollout's environment fixed through its policy update.
         model.eval().requires_grad_(False)
         try:
-            with precision(device), torch.set_grad_enabled(direct):
+            with precision(device, args.amp), torch.set_grad_enabled(direct):
                 experience = collect(model, policy, he, image, marker, direct=direct)
-            update = direct_policy_update if direct else policy_update
-            stats = update(policy, optimizer, experience, cfg)
+            if direct:
+                stats = direct_policy_update(policy, optimizer, experience, cfg, scaler=scaler)
+            else:
+                stats = policy_update(policy, optimizer, experience, cfg)
         finally:
             model.train().requires_grad_(True)
-        stats.update(flow_update(model, flow_optimizer, critic_optimizer, image, he, marker, policy=policy))
+        stats.update(flow_update(model, flow_optimizer, critic_optimizer, image, he, marker,
+                                 policy=policy, scaler=scaler, amp=args.amp))
         stats["objective"] = objective
         stats["lr_factor"] = lr_factor
         groups += he.shape[0]
         if groups >= next_save or groups == args.groups or groups == he.shape[0]:
             save_checkpoint(args.output, model, optimizer, groups, "rl", policy, critic_optimizer=critic_optimizer,
-                            policy_objective=objective, flow_optimizer=flow_optimizer)
+                            policy_objective=objective, flow_optimizer=flow_optimizer, scaler=scaler)
             next_save = groups + args.save_every
             print(json.dumps({"stage": "rl", "groups": groups, **stats}), flush=True)
         if groups >= target_groups or (deadline is not None and time.monotonic() >= deadline):
             break
     save_checkpoint(args.output, model, optimizer, groups, "rl", policy, critic_optimizer=critic_optimizer,
-                            policy_objective=objective, flow_optimizer=flow_optimizer)
+                            policy_objective=objective, flow_optimizer=flow_optimizer, scaler=scaler)
     print(json.dumps({"stage": "rl", "groups": groups, "target": target_groups, "file": str(args.output)}))
 
 
@@ -272,7 +323,7 @@ def infer(args):
     image = torch.from_numpy(rgb.copy()).permute(2,0,1).float() / 127.5 - 1
     image = image[None].to(device)
     noise = torch.randn(image.shape[1:], generator=torch.Generator().manual_seed(args.seed))[None].to(device)
-    with precision(device):
+    with precision(device, "fp32"):
         estimate = sample_rgb(model, image, marker, noise, policy)
     result = estimate.float().cpu()[0].permute(1,2,0).clamp(-1,1).numpy()
     rendered = Image.fromarray(np.rint((result + 1)*127.5).astype(np.uint8)).resize(native_size, Image.Resampling.BILINEAR)
