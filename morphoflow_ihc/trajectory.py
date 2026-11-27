@@ -90,13 +90,13 @@ def action_distribution(mean, std):
 def paired_expression_reward(model, generated, reference, marker):
     """Differentiable regional DAB support/amount reward from paired IHC.
 
-    Regional pooling reduces sensitivity to small serial-section shifts; it
-    does not establish exact cell-wise correspondence.
+    Coarse regional pooling reduces sensitivity to local serial-section shifts;
+    it does not establish exact cell-wise correspondence or correct large warps.
     """
     cfg = model.cfg
     estimated = rgb_to_dab(generated, cfg)
     target = rgb_to_dab(reference, cfg).detach()
-    window = cfg.region
+    window = cfg.reward_region
     thresholds = generated.new_tensor(list(cfg.markers.values()))[marker].view(-1, 1, 1, 1)
     predicted_support = torch.sigmoid((estimated - thresholds) / 0.05)
     target_support = (target > thresholds).float()
