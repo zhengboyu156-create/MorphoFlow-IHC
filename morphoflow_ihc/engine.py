@@ -148,9 +148,9 @@ def train_flow(args, cfg):
     dataset = IHCCrops(args.cache, cfg)
     loader = make_loader(dataset, args.batch, args.workers, device)
     target = args.steps or args.epochs * len(loader)
-    deadline = time.monotonic() + 3600 * args.hours
+    deadline = None if args.no_time_limit else time.monotonic() + 3600 * args.hours
     for pack in batches(loader):
-        if step >= target or time.monotonic() >= deadline:
+        if step >= target or (deadline is not None and time.monotonic() >= deadline):
             break
         marker, image, he = (value.to(device, non_blocking=True) for value in pack)
         stats = flow_update(model, optimizer, critic_optimizer, image, he, marker)
@@ -158,7 +158,7 @@ def train_flow(args, cfg):
         if step == 1 or step % args.save_every == 0 or step == target:
             save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer)
             print(json.dumps({"stage": "flow", "step": step, **stats}), flush=True)
-        if step >= target or time.monotonic() >= deadline:
+        if step >= target or (deadline is not None and time.monotonic() >= deadline):
             break
     save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer)
     print(json.dumps({"stage": "flow", "step": step, "target": target, "file": str(args.output)}))
@@ -199,9 +199,9 @@ def train_policy(args):
     dataset = IHCCrops(args.cache, cfg)
     loader = make_loader(dataset, args.batch, args.workers, device)
     next_save = groups + args.save_every
-    deadline = time.monotonic() + 3600 * args.hours
+    deadline = None if args.no_time_limit else time.monotonic() + 3600 * args.hours
     for pack in batches(loader):
-        if groups >= args.groups or time.monotonic() >= deadline:
+        if groups >= args.groups or (deadline is not None and time.monotonic() >= deadline):
             break
         limit = args.groups - groups
         marker, image, he = (value[:limit].to(device, non_blocking=True) for value in pack)
@@ -223,7 +223,7 @@ def train_policy(args):
                             policy_objective=objective, flow_optimizer=flow_optimizer)
             next_save = groups + args.save_every
             print(json.dumps({"stage": "rl", "groups": groups, **stats}), flush=True)
-        if groups >= args.groups or time.monotonic() >= deadline:
+        if groups >= args.groups or (deadline is not None and time.monotonic() >= deadline):
             break
     save_checkpoint(args.output, model, optimizer, groups, "rl", policy, critic_optimizer=critic_optimizer,
                             policy_objective=objective, flow_optimizer=flow_optimizer)

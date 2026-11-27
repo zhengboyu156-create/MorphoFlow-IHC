@@ -29,6 +29,10 @@ def training_options(command, default_hours, default_batch):
     command.add_argument("--device", default="auto")
     command.add_argument("--seed", type=int, default=1234)
     command.add_argument("--hours", type=duration, default=default_hours)
+    command.add_argument(
+        "--no-time-limit", action="store_true",
+        help="Run to the configured epoch or group target without an hours cap",
+    )
     command.add_argument("--save-every", type=positive_int, default=500)
 
 

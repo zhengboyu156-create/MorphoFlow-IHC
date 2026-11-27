@@ -190,11 +190,12 @@ def test_cli_pipeline(tmp_path):
     marker, paired_ihc, paired_he = paired[0]
     assert marker in (0, 1)
     assert paired_ihc.shape == paired_he.shape == (3, 32, 32)
-    base = ["train", "--cache", cache, "--config", cfg_path, "--output", flow, "--device", "cpu"]
+    base = ["train", "--cache", cache, "--config", cfg_path, "--output", flow,
+            "--device", "cpu", "--no-time-limit"]
     main(base + ["--steps", "1", "--batch", "2"])
     main(base + ["--steps", "2", "--resume", flow])
     main(["train-rl", "--cache", cache, "--checkpoint", flow, "--output", rl, "--groups", "2",
-          "--policy-lr", "0.0001", "--device", "cpu"])
+          "--policy-lr", "0.0001", "--device", "cpu", "--no-time-limit"])
     joint = torch.load(rl, weights_only=True)
     initial = torch.load(flow, weights_only=True)
     assert joint["step"] == 2
