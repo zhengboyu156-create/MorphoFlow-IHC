@@ -26,7 +26,7 @@
 
 ```bash
 python -m morphoflow_ihc prepare --manifest datasets/MIST_HER2/manifest.csv --config configs/mist_her2.json --output data/cache_format9_officialsplit_20261127
-python -m morphoflow_ihc train --cache data/cache_format9_officialsplit_20261127 --config configs/mist_her2.json --output runs/formal_mist_her2_officialsplit_20261127_seed1234/flow.pt --device cuda --hours 20 --batch 1 --workers 0 --seed 1234 --save-every 500
+python -m morphoflow_ihc train --cache data/cache_format9_officialsplit_20261127 --config configs/mist_her2.json --output runs/formal_mist_her2_officialsplit_20261127_seed1234/flow.pt --device cuda --hours 20 --epochs 25 --batch 1 --workers 0 --seed 1234 --save-every 500
 python -m morphoflow_ihc train-rl --cache data/cache_format9_officialsplit_20261127 --checkpoint runs/formal_mist_her2_officialsplit_20261127_seed1234/flow.pt --output runs/formal_mist_her2_officialsplit_20261127_seed1234/ppo.pt --device cuda --hours 6 --groups 1000000 --batch 1 --workers 0 --seed 1234 --save-every 500
 ```
 
