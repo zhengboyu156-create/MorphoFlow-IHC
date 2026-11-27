@@ -1,13 +1,13 @@
 # Live training status
 
-Updated: 2026-11-27 19:51 +08:00 (remote host clock)
+Updated: 2026-11-27 19:56:43 +08:00 (remote host clock)
 
-- Branch: `fix/regionally-tolerant-flow-training-20261127`
+- Branch: `fix/overlap-tolerant-regional-reward-20261127`
 - Source code commit: `cebc69021da5b911dc7185127db9fb24239230a2`
 - Remote run directory: `/root/autodl-tmp/morphoflow_cebc690/runs/formal_mist_her2_format9_20261127_seed1234`
-- Stage: fresh Flow training; PID 1351 active; GPU utilization 67%, 4,670 MiB used.
-- Progress: 6,000 / 113,325 updates (5.3%); `flow.pt` checkpoint updated at 19:48, 49,690,081 bytes.
-- Runtime at observation: about 41 minutes from launch at 19:10:09 +08:00. Overall observed throughput is about 2.44 updates/s. If it holds, Flow ETA is approximately 2026-11-28 08:02 +08:00. PPO then has a 6-hour cap, giving a provisional end near 14:02 +08:00, before full validation. Estimates may shift with throughput.
+- Stage: fresh Flow training; PID 1351 active; GPU utilization 58%, 4,670 MiB used. SSH reconnected after a connection reset; the same training PID remained active.
+- Progress: 7,000 / 113,325 updates (6.2%); `flow.pt` checkpoint updated at 19:54, about 49.7 MB.
+- Runtime at observation: 46m34s from launch at 19:10:09 +08:00. Overall throughput is about 2.51 updates/s. If it holds, Flow ETA is approximately 2026-11-28 07:45 +08:00. PPO then has a 6-hour cap, giving a provisional end near 13:45 +08:00. Full validation follows and is not included in this estimate; its runtime has not yet been measured. Estimates may shift with throughput.
 - PPO has not started in this formal run. The short preflight is not evidence of policy benefit.
 
 Latest logged losses:
@@ -27,7 +27,9 @@ Latest logged losses:
 | 5,000 | 0.00852 | 0.00876 | 0.70083 | 0.69996 |
 | 5,500 | 0.00783 | 0.27375 | 0.65893 | 0.74001 |
 | 6,000 | 0.01106 | 0.00382 | 0.67076 | 0.66664 |
+| 6,500 | 0.00459 | 0.02911 | 0.79922 | 0.59947 |
+| 7,000 | 0.01302 | 0.04595 | 0.68123 | 0.73223 |
 
-All displayed values are finite, and recent critic/adversarial losses are in a relatively stable range. This indicates the logged optimization steps are executing; it does not show that any component improves held-out staining quality. Full validation, policy reward-signal analysis, and component ablations remain pending. Runtime is PyTorch 2.1.2+cu118, below the repository-declared 2.7 minimum.
+All displayed values are finite. These logs establish that optimization steps execute; they do not show that any component improves held-out staining quality. Full validation, policy reward-signal analysis, and component ablations remain pending. Runtime is PyTorch 2.1.2+cu118, below the repository-declared 2.7 minimum.
 
 No weights, images, or prediction arrays are included in this Git record.
