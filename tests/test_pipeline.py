@@ -333,6 +333,37 @@ def test_policy_action_can_modify_rgb_channels_independently():
     assert torch.max(torch.abs(output - base)) <= cfg.velocity_limit + 1e-6
 
 
+def test_paired_reward_is_smoother_to_small_section_shifts():
+    from morphoflow_ihc.model import StainFlow
+    from morphoflow_ihc.trajectory import paired_expression_reward
+
+    cfg = Config(markers={"HER2": 0.35}, crop=32, region=8, context=16, overlap=8,
+                 channel_mult=(1, 1), ode_steps=4, action_step=2)
+    model = StainFlow(cfg).eval()
+    he_vector = torch.tensor(cfg.stain_h)
+    he_vector = he_vector / he_vector.norm()
+    dab_vector = torch.tensor(cfg.stain_d)
+    dab_vector = dab_vector / dab_vector.norm()
+    he_od = torch.full((1, 1, 32, 32), 0.2)
+    target = torch.zeros_like(he_od)
+    target[:, :, 4:12, 4:12] = 0.8
+    nearby = torch.zeros_like(he_od)
+    nearby[:, :, 6:14, 6:14] = 0.8
+    distant = torch.zeros_like(he_od)
+    distant[:, :, 20:28, 20:28] = 0.8
+
+    def render(dab):
+        return 2 * torch.exp(-he_od * he_vector[None, :, None, None]
+                             - dab * dab_vector[None, :, None, None]) - 1
+
+    reference = render(target)
+    with torch.no_grad():
+        exact = paired_expression_reward(model, reference, reference, torch.zeros(1, dtype=torch.long))
+        small_shift = paired_expression_reward(model, render(nearby), reference, torch.zeros(1, dtype=torch.long))
+        large_shift = paired_expression_reward(model, render(distant), reference, torch.zeros(1, dtype=torch.long))
+    assert exact.item() > small_shift.item() > large_shift.item()
+
+
 def test_paired_reward_gradient_reaches_flow():
     from morphoflow_ihc.model import StainFlow
     from morphoflow_ihc.trajectory import paired_expression_reward, sample_rgb
