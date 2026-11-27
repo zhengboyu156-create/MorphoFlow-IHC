@@ -67,7 +67,8 @@ class IHCCritic(nn.Module):
     def __init__(self, markers: int, base_channels: int = 32, layers: int = 3):
         super().__init__()
         self.markers = markers
-        input_channels = 3 + markers  # IHC RGB plus a marker indicator map
+        # Keep a zero-filled 3-channel slot so preflight checkpoints remain shape-compatible.
+        input_channels = 6 + markers
         sequence = [nn.Conv2d(input_channels, base_channels, 4, stride=2, padding=1),
                     nn.LeakyReLU(0.2, inplace=True)]
         nf_mult = 1
@@ -90,7 +91,8 @@ class IHCCritic(nn.Module):
     def forward(self, image, marker):
         marker_map = F.one_hot(marker, num_classes=self.markers).to(image.dtype)
         marker_map = marker_map[:, :, None, None].expand(-1, -1, *image.shape[-2:])
-        return self.model(torch.cat((image.float(), marker_map.float()), dim=1))
+        unpaired_slot = torch.zeros_like(image)
+        return self.model(torch.cat((image.float(), unpaired_slot, marker_map.float()), dim=1))
 
 
 class VelocityPolicy(nn.Module):
