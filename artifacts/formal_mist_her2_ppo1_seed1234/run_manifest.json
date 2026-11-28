@@ -2,7 +2,7 @@
   "branch": "formal/mist-her2-locked-ppo-20261129",
   "commit": "082482984fa57a7de83f510b315b720ec57e2010",
   "started": "2026-11-28T21:40:37.9577758+08:00",
-  "local_root": "D:\\MorphoFlow-IHC-formal\\formal_mist_her2_ppo1_seed1234",
+  "local_root": "D:\\2222\\formal_mist_her2_ppo1_seed1234",
   "manifest_sha256": "bd667a845ddf15071815c6f31a042d190abc353ecf2c14f5cfc5f6d8c6695571",
   "config_sha256": "0777613a2697e6398cabb3f69f95651beac45739edf05b4b5dc7183d05af560e",
   "cache_index_sha256": "6819928e5488259264fbf99ac99169f1204aa1bbbcf81dd7e7c35387c763187e",
@@ -23,5 +23,11 @@
   "torch": "2.7.1+cu128",
   "cuda": "12.8",
   "checkpoint_sha256_at_step1000": "7d48d03e4c6e9a13e20a4f8e2a61e04adcb3cb4e96fcc7ff4972682ee9bef01e",
-  "checkpoint_weights_uploaded": false
+  "checkpoint_weights_uploaded": false,
+  "resume_from_step": 2000,
+  "resume_checkpoint_sha256": "fdbad918a760ec21dc8d1dd36231742df8a8b7b6259661d126b5d8a0e78ba9b5",
+  "resume_optimizer_state_preserved": true,
+  "source_images_root": "D:\\2222\\datasets\\MIST_HER2",
+  "training_cache_root": "D:\\2222\\formal_mist_her2_ppo1_seed1234\\cache",
+  "all_image_weight_cache_assets_moved_to_D2222": true
 }

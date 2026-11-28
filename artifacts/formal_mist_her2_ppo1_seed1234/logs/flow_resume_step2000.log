@@ -1,0 +1,7 @@
+{"stage": "flow", "event": "start", "step": 0, "target": 185680, "amp": "auto", "run": {"cache_index_sha256": "6819928e5488259264fbf99ac99169f1204aa1bbbcf81dd7e7c35387c763187e", "seed": 1234, "batch": 1, "amp": "torch.bfloat16"}}
+{"stage": "flow", "step": 1, "flow_loss": 0.13333232700824738, "nce_loss": 4.528027534484863, "critic_loss": 0.726543664932251, "adversarial_loss": 0.6952226758003235}
+{"stage": "flow", "step": 500, "flow_loss": 0.026195740327239037, "nce_loss": 2.6648170948028564, "critic_loss": 0.0007371028186753392, "adversarial_loss": 0.0578082911670208}
+{"stage": "flow", "step": 1000, "flow_loss": 0.013969249092042446, "nce_loss": 2.6660678386688232, "critic_loss": 0.00019217506633140147, "adversarial_loss": 0.12905524671077728}
+{"stage": "flow", "step": 1500, "flow_loss": 0.02588403970003128, "nce_loss": 2.226954221725464, "critic_loss": 0.00010932628356385976, "adversarial_loss": 0.16096070408821106}
+{"stage": "flow", "step": 2000, "flow_loss": 0.02722931280732155, "nce_loss": 2.2592382431030273, "critic_loss": 8.372605952899903e-05, "adversarial_loss": 0.15015314519405365}
+{"stage": "flow", "event": "start", "step": 2000, "target": 185680, "amp": "auto", "run": {"cache_index_sha256": "6819928e5488259264fbf99ac99169f1204aa1bbbcf81dd7e7c35387c763187e", "seed": 1234, "batch": 1, "amp": "torch.bfloat16"}}

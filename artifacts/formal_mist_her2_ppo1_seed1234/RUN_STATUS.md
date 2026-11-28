@@ -8,5 +8,10 @@
 - At this snapshot Flow reached step 1,000/185,680. flow_loss=0.013969, nce_loss=2.666068, adversarial_loss=0.129055.
 - An early throughput estimate projected about 19 hours remaining for Flow plus 5-6 hours for PPO; this is provisional and will be revised from later checkpoints.
 - Checkpoints, source data and generated cache are kept on local D: storage and are not included in Git. The official test set has not been evaluated.
-- C: ran out of space while an initial cache was being built at the workspace path. That incomplete cache has no index and is not used. The run was rebuilt on D:. Recursive cleanup was blocked by the environment's automatic review, so the incomplete C: cache remains until manually removed.
+- C: initially ran out of space during an incomplete cache build. The incomplete cache has no index, was moved under D:\2222\data, and is not used.
 - Full machine-local provenance is in run_manifest.json; training and preparation logs are under logs/.
+
+## Storage relocation and resume
+
+All source images, image caches and pilot/formal weights are physically under D:\2222. The C: workspace paths datasets, data and runs are junctions to D:\2222 so repository commands keep working. Flow was paused at a saved step-2,000 checkpoint, its optimizer state was confirmed, then resumed from that checkpoint using the same cache index and locked settings. At this update it is running again from step 2,000; no test images were included in the cache.
+
