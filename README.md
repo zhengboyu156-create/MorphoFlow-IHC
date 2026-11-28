@@ -36,6 +36,8 @@ See the [logic audit](docs/LOGIC_AUDIT_20261126.md) for the verified train/updat
 
 Before the formal run, follow the updated [preformal experiment guide](docs/experiments/PREFORMAL_EXPERIMENT_GUIDE_20261128.md). It records the current format-10 40+10 settings, what's already been tested, when not to repeat smoke checks, and the limits of short-run evidence.
 
+For the frozen MIST HER2 formal run following the 2026-11-29 PPO pilot, use the dedicated [formal lock sheet](docs/experiments/FORMAL_MIST_HER2_LOCK_PPO1_20261129.md) and [explicit config](configs/mist_her2_formal_ppo1.json). It fixes the exploratory-selected `velocity_limit=1.0`; do not continue scale tuning on the same pilot-dev.
+
 The paired IHC image supplies a DAB proxy map during training; no manual cell masks or expression labels are required. CFM compares regional velocity averages at 64 px, while PPO compares DAB support fraction and amount at the coarse `reward_region` scale (128 px by default). Both use four shifted grid phases. This reduces sensitivity to small local shifts and grid-origin effects; it cannot correct large/nonrigid mismatch or identify the exact positive cell. H&E-conditioned PatchNCE separately encourages structure preservation.
 
 ## Setup and run
