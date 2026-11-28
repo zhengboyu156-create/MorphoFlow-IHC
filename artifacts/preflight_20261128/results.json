@@ -1,0 +1,68 @@
+{
+  "branch": "docs/formal-preflight-guide-20261128",
+  "guide_commit": "c6caf63e90f303a10b13041d7444604a6feec1eb",
+  "code_commit": "273f2f89b50eb09a18524edd484e7def94860b4b",
+  "config_sha256": "f0fd285fcb84e85737a6e008815f78c269eb3a456579978f6a315597f3d94cf0",
+  "manifest_sha256": "bd667a845ddf15071815c6f31a042d190abc353ecf2c14f5cfc5f6d8c6695571",
+  "cache_index_sha256": "c6249071adebcc287716badc9c098dc119f66195a6c21754ae2a3fc3fa7f3f44",
+  "environment": {
+    "python": "3.12.4",
+    "torch": "2.7.1+cu128",
+    "cuda": "12.8",
+    "gpu": "NVIDIA GeForce RTX 5070 Ti"
+  },
+  "cache": {
+    "format": 4,
+    "training_pairs": 4642,
+    "test_pairs": 1000,
+    "entries": 4642
+  },
+  "tests": {
+    "passed": 28
+  },
+  "flow": {
+    "steps": 8,
+    "precision": "torch.bfloat16",
+    "format": 10,
+    "step1": {
+      "flow_loss": 0.13333232700824738,
+      "nce_loss": 4.528027534484863,
+      "critic_loss": 0.726543664932251,
+      "adversarial_loss": 0.6952226758003235
+    },
+    "step8": {
+      "flow_loss": 0.5092905163764954,
+      "nce_loss": 4.508775234222412,
+      "critic_loss": 0.6453033685684204,
+      "adversarial_loss": 0.6212197542190552
+    }
+  },
+  "ppo": {
+    "groups": 8,
+    "precision": "torch.bfloat16",
+    "format": 10,
+    "objective": "ppo",
+    "signal_fraction_each_group": 1.0,
+    "reward_spread_min": 1.5974044799804688e-05,
+    "reward_spread_max": 8.106231689453125e-05,
+    "accepted_policy_passes_each_group": 2,
+    "kl_max": 6.97638370183995e-06
+  },
+  "inference": {
+    "split": "trainA training sample",
+    "size": [
+      1024,
+      1024,
+      3
+    ],
+    "dtype": "uint8",
+    "finite": true,
+    "seed": 1234
+  },
+  "artifacts_local_only": [
+    "runs/preflight_20261128/flow.pt",
+    "runs/preflight_20261128/policy.pt",
+    "runs/preflight_20261128/train_sample.png"
+  ],
+  "formal_training_started": false
+}
