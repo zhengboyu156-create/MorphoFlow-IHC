@@ -11,6 +11,7 @@ Now, `StainFlow.losses` keeps the regional CFM velocity objective and separately
 ## Evaluation-path corrections
 
 - Fiji and FID reference staging now removes stale image files, refreshes every expected image, and checks each staged file's SHA-256 rather than trusting equal file size.
+- Both evaluators verify each H&E/IHC input against the manifest's recorded byte count and SHA-256 before inference.
 - Both the standardized comparison evaluator and the regional-diagnostic evaluator assign every image a deterministic, pair-specific noise seed derived from the base seed and `(source_prefix, filename)`. The seed is saved alongside its per-image metric row.
 - Prediction reuse now requires exact IDs, a matching provenance sidecar (weights/config/manifest hashes, checkpoint step, seed policy and inference path), and matching hashes for all prediction files. A directory from the previous evaluator cannot be silently reused.
 - Full checkpoints are checked against the supplied evaluation config. Both evaluators require a verifiable checkpoint step (from checkpoint metadata or an explicit CLI value), rather than hardcoding 185,680, and record the configured number of Euler steps.

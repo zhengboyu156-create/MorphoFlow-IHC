@@ -33,6 +33,16 @@ def sha256(path):
     return h.hexdigest()
 
 
+def verify_manifest_image(path, row):
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    if path.stat().st_size != int(row["bytes"]):
+        raise RuntimeError(f"Manifest byte-count mismatch: {path}")
+    expected_hash = row["sha256"].strip().lower()
+    if expected_hash and sha256(path) != expected_hash:
+        raise RuntimeError(f"Manifest SHA-256 mismatch: {path}")
+
+
 def image_seed(base_seed, pair_key):
     """Stable, distinct seed for each official paired image."""
     token = f"{int(base_seed)}:{pair_key[0]}/{pair_key[1]}".encode("utf-8")
@@ -122,6 +132,8 @@ def main():
         he_row, ihc_row = pair["valA"], pair["valB"]
         he_path = args.data_root / "valA" / he_row["source_prefix"] / he_row["filename"]
         ihc_path = args.data_root / "valB" / ihc_row["source_prefix"] / ihc_row["filename"]
+        verify_manifest_image(he_path, he_row)
+        verify_manifest_image(ihc_path, ihc_row)
         with Image.open(he_path) as raw:
             he_image = raw.convert("RGB")
         with Image.open(ihc_path) as raw:
