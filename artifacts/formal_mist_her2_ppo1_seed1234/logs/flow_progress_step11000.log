@@ -1,0 +1,26 @@
+{"stage": "flow", "event": "start", "step": 0, "target": 185680, "amp": "auto", "run": {"cache_index_sha256": "6819928e5488259264fbf99ac99169f1204aa1bbbcf81dd7e7c35387c763187e", "seed": 1234, "batch": 1, "amp": "torch.bfloat16"}}
+{"stage": "flow", "step": 1, "flow_loss": 0.13333232700824738, "nce_loss": 4.528027534484863, "critic_loss": 0.726543664932251, "adversarial_loss": 0.6952226758003235}
+{"stage": "flow", "step": 500, "flow_loss": 0.026195740327239037, "nce_loss": 2.6648170948028564, "critic_loss": 0.0007371028186753392, "adversarial_loss": 0.0578082911670208}
+{"stage": "flow", "step": 1000, "flow_loss": 0.013969249092042446, "nce_loss": 2.6660678386688232, "critic_loss": 0.00019217506633140147, "adversarial_loss": 0.12905524671077728}
+{"stage": "flow", "step": 1500, "flow_loss": 0.02588403970003128, "nce_loss": 2.226954221725464, "critic_loss": 0.00010932628356385976, "adversarial_loss": 0.16096070408821106}
+{"stage": "flow", "step": 2000, "flow_loss": 0.02722931280732155, "nce_loss": 2.2592382431030273, "critic_loss": 8.372605952899903e-05, "adversarial_loss": 0.15015314519405365}
+{"stage": "flow", "event": "start", "step": 2000, "target": 185680, "amp": "auto", "run": {"cache_index_sha256": "6819928e5488259264fbf99ac99169f1204aa1bbbcf81dd7e7c35387c763187e", "seed": 1234, "batch": 1, "amp": "torch.bfloat16"}}
+{"stage": "flow", "step": 2500, "flow_loss": 0.006313539110124111, "nce_loss": 1.7872142791748047, "critic_loss": 3.739385647349991e-05, "adversarial_loss": 0.12942959368228912}
+{"stage": "flow", "step": 3000, "flow_loss": 0.01613442599773407, "nce_loss": 1.7630866765975952, "critic_loss": 3.154035221086815e-05, "adversarial_loss": 0.08499691635370255}
+{"stage": "flow", "step": 3500, "flow_loss": 0.016905317083001137, "nce_loss": 1.738623023033142, "critic_loss": 1.5624586012563668e-05, "adversarial_loss": 0.10707437992095947}
+{"stage": "flow", "step": 4000, "flow_loss": 0.0126047907397151, "nce_loss": 1.5506614446640015, "critic_loss": 1.2907059499411844e-05, "adversarial_loss": 0.08500051498413086}
+{"stage": "flow", "step": 4500, "flow_loss": 0.0036801747046411037, "nce_loss": 1.2275583744049072, "critic_loss": 9.191051503876224e-06, "adversarial_loss": 0.038310375064611435}
+{"stage": "flow", "step": 5000, "flow_loss": 0.006136401556432247, "nce_loss": 1.0730206966400146, "critic_loss": 6.368869435391389e-06, "adversarial_loss": 0.036660537123680115}
+{"stage": "flow", "step": 5500, "flow_loss": 0.006247266195714474, "nce_loss": 0.9175505638122559, "critic_loss": 5.762590262747835e-06, "adversarial_loss": 0.025798911228775978}
+{"stage": "flow", "step": 6000, "flow_loss": 0.010718746110796928, "nce_loss": 0.8724400401115417, "critic_loss": 3.374146899659536e-06, "adversarial_loss": 0.05249008163809776}
+{"stage": "flow", "step": 6500, "flow_loss": 0.003669973462820053, "nce_loss": 0.7018123269081116, "critic_loss": 3.5174080039723776e-06, "adversarial_loss": 0.0611264742910862}
+{"stage": "flow", "step": 7000, "flow_loss": 0.002481709001585841, "nce_loss": 0.8807508945465088, "critic_loss": 2.6762668312585447e-06, "adversarial_loss": 0.013074435293674469}
+{"stage": "flow", "step": 7500, "flow_loss": 0.001944747637026012, "nce_loss": 1.0484623908996582, "critic_loss": 1.97399640455842e-06, "adversarial_loss": 0.03850049152970314}
+{"stage": "flow", "step": 8000, "flow_loss": 0.04324997216463089, "nce_loss": 1.0264960527420044, "critic_loss": 1.078019067790592e-06, "adversarial_loss": 0.020248131826519966}
+{"stage": "flow", "step": 8500, "flow_loss": 0.00185539317317307, "nce_loss": 1.0928267240524292, "critic_loss": 9.812597454583738e-07, "adversarial_loss": 0.00955907627940178}
+{"stage": "flow", "step": 9000, "flow_loss": 0.01162700355052948, "nce_loss": 0.8061469793319702, "critic_loss": 9.592072274244856e-07, "adversarial_loss": 0.012004949152469635}
+{"stage": "flow", "step": 9500, "flow_loss": 0.0035575313959270716, "nce_loss": 1.7570815086364746, "critic_loss": 8.124752639560029e-07, "adversarial_loss": 0.01083257794380188}
+{"stage": "flow", "step": 10000, "flow_loss": 0.015360773541033268, "nce_loss": 2.1572017669677734, "critic_loss": 4.375118578536785e-07, "adversarial_loss": 0.011146905831992626}
+{"stage": "flow", "step": 10500, "flow_loss": 0.006841051857918501, "nce_loss": 0.506548285484314, "critic_loss": 2.7923086236114614e-05, "adversarial_loss": 0.025898873805999756}
+{"stage": "flow", "step": 11000, "flow_loss": 0.00182890344876796, "nce_loss": 0.7405321002006531, "critic_loss": 8.407871064264327e-06, "adversarial_loss": 0.009258429519832134}
+{"stage": "flow", "step": 11500, "flow_loss": 0.001650843070819974, "nce_loss": 0.46127185225486755, "critic_loss": 4.403751518111676e-06, "adversarial_loss": 0.00017113408830482513}
