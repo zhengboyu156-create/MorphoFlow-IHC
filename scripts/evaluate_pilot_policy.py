@@ -41,7 +41,7 @@ def support_metrics(prediction, reference, window, tau):
             for value, count in zip(regional_average((prediction > tau).float(), window), counts)]
     ref = [value / count.clamp_min(1e-8)
            for value, count in zip(regional_average((reference > tau).float(), window), counts)]
-    phase_mae, phase_f1 = [], []
+    phase_mae, phase_f1, phase_pred_positive, phase_ref_positive = [], [], [], []
     for pred_fraction, ref_fraction, count in zip(pred, ref, counts):
         valid = count > 0
         phase_mae.append((pred_fraction - ref_fraction).abs()[valid].mean().item())
@@ -51,7 +51,18 @@ def support_metrics(prediction, reference, window, tau):
         fp = (predicted_positive & ~reference_positive & valid).sum().float()
         fn = (~predicted_positive & reference_positive & valid).sum().float()
         phase_f1.append((2 * tp / (2 * tp + fp + fn).clamp_min(1)).item())
-    return float(statistics.fmean(phase_mae)), float(statistics.fmean(phase_f1)), phase_mae, phase_f1
+        phase_pred_positive.append(predicted_positive[valid].float().mean().item())
+        phase_ref_positive.append(reference_positive[valid].float().mean().item())
+    return (
+        float(statistics.fmean(phase_mae)),
+        float(statistics.fmean(phase_f1)),
+        phase_mae,
+        phase_f1,
+        float(statistics.fmean(phase_pred_positive)),
+        float(statistics.fmean(phase_ref_positive)),
+        phase_pred_positive,
+        phase_ref_positive,
+    )
 
 
 def prefix_bootstrap(rows, model_name, seed, draws=10000):
@@ -153,13 +164,21 @@ def main():
                 predicted_dab = rgb_to_dab(generated, cfg)
                 metrics = {}
                 for window in (64, 128):
-                    mae, f1, phase_mae, phase_f1 = support_metrics(predicted_dab, reference_dab, window, tau)
+                    (mae, f1, phase_mae, phase_f1, predicted_positive_fraction,
+                     reference_positive_fraction, phase_predicted_positive_fraction,
+                     phase_reference_positive_fraction) = support_metrics(predicted_dab, reference_dab, window, tau)
                     metrics[f"support_mae_{window}"] = mae
                     metrics[f"support_f1_{window}"] = f1
+                    metrics[f"support_pred_positive_window_fraction_{window}"] = predicted_positive_fraction
+                    metrics[f"support_ref_positive_window_fraction_{window}"] = reference_positive_fraction
                     for phase, value in enumerate(phase_mae):
                         metrics[f"support_mae_{window}_phase{phase}"] = value
                     for phase, value in enumerate(phase_f1):
                         metrics[f"support_f1_{window}_phase{phase}"] = value
+                    for phase, value in enumerate(phase_predicted_positive_fraction):
+                        metrics[f"support_pred_positive_window_fraction_{window}_phase{phase}"] = value
+                    for phase, value in enumerate(phase_reference_positive_fraction):
+                        metrics[f"support_ref_positive_window_fraction_{window}_phase{phase}"] = value
                 predicted_total = (predicted_dab[0, 0] * tissue_tensor[0, 0]).sum().item()
                 metrics["dab_total_relative_error"] = abs(predicted_total - target_total) / max(target_total, 1e-8)
                 metrics["dab_mean_on_reference_tissue"] = (predicted_dab[0, 0] * tissue_tensor[0, 0]).sum().item() / max(int(tissue_tensor.sum().item()), 1)
@@ -261,6 +280,11 @@ def main():
                         "ppo1000": {"sha256": sha256(args.ppo), "step": ppo_state["step"]},
                         "zero_action1000": {"sha256": sha256(args.zero_action), "step": zero_state["step"]}},
         "policy_velocity_limit": ppo_velocity_limit,
+        "metric_definitions": {
+            "support_f1_window_fraction_threshold": 0.01,
+            "support_f1_role": "diagnostic only; interpret with predicted/reference positive-window prevalence",
+            "support_mae_role": "continuous primary regional support metric",
+        },
         "metrics": aggregate,
         "paired_deltas": deltas,
         "descriptive_prefix_bootstrap": {
