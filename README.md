@@ -34,7 +34,7 @@ The implementation is compared with pinned official PyTorch references in [Imple
 
 See the [logic audit](docs/LOGIC_AUDIT_20261126.md) for the verified train/update flow and the remaining pair-registration and supervision limitations.
 
-Before a full run, follow the [pretraining preflight checklist](docs/PREFLIGHT_BEFORE_FORMAL_TRAINING_20261126.md): environment and data checks, loss/gradient tests, reward and policy checks, CUDA smoke training, and inference validation.
+Before the formal run, follow the updated [preformal experiment guide](docs/experiments/PREFORMAL_EXPERIMENT_GUIDE_20261128.md). It records the current format-10 40+10 settings, what's already been tested, when not to repeat smoke checks, and the limits of short-run evidence.
 
 The paired IHC image supplies a DAB proxy map during training; no manual cell masks or expression labels are required. CFM compares regional velocity averages at 64 px, while PPO compares DAB support fraction and amount at the coarse `reward_region` scale (128 px by default). Both use four shifted grid phases. This reduces sensitivity to small local shifts and grid-origin effects; it cannot correct large/nonrigid mismatch or identify the exact positive cell. H&E-conditioned PatchNCE separately encourages structure preservation.
 
