@@ -85,9 +85,9 @@ def checkpoint_for_evaluation(args, cfg, device, *, load_model=True):
     stage = state.get("stage") if full else "flow"
     step = state.get("step") if full else args.checkpoint_step
     if checkpoint_format != CHECKPOINT_FORMAT and (
-        not args.allow_historical_weights or checkpoint_format not in {None, 9}
+        not args.allow_historical_weights or checkpoint_format not in {None, 9, 10}
     ):
-        raise ValueError("Use a format 10 checkpoint, or explicitly allow historical/bare weights for evaluation")
+        raise ValueError(f"Use a format {CHECKPOINT_FORMAT} checkpoint, or explicitly allow historical/bare weights for evaluation")
     if stage not in {"flow", "rl"} or type(step) is not int or step < 1:
         raise ValueError("Expected a Flow or RL checkpoint with a positive training step")
     if args.checkpoint_step is not None and step != args.checkpoint_step:

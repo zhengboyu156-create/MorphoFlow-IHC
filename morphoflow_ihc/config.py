@@ -16,6 +16,7 @@ class Config:
     region: int = 32
     reward_region: int | None = None
     flow_region: int | None = None
+    flow_objective: str = "regional"
     context: int = 128
     overlap: int = 64
     channels: int = 32
@@ -67,6 +68,8 @@ class Config:
             flow_regions = [size for size in range(self.region, min(64, self.crop) + 1, self.region)
                             if self.crop % size == 0]
             self.flow_region = max(flow_regions)
+        if self.flow_objective not in {"regional", "pixel"}:
+            raise ValueError("flow_objective must be regional or pixel")
         if (self.flow_region < self.region or self.flow_region > self.crop
                 or self.crop % self.flow_region or self.flow_region % self.region):
             raise ValueError("flow_region must be a region-aligned divisor of crop, at least region")
@@ -89,11 +92,12 @@ class Config:
         positive = (self.pixel_size_um, self.tissue_od,
                     self.action_std, self.velocity_limit, self.velocity_rms_floor,
                     self.min_reward_spread,
-                    self.kl_limit, self.flow_lr, self.rl_lr,
-                    self.adversarial_weight, self.critic_lr,
+                    self.kl_limit, self.flow_lr, self.rl_lr, self.critic_lr,
                     *self.markers.values())
         if any(not math.isfinite(value) or value <= 0 for value in positive):
             raise ValueError("Physical and optimization scales must be finite and positive")
+        if not math.isfinite(self.adversarial_weight) or self.adversarial_weight < 0:
+            raise ValueError("Adversarial weight must be finite and nonnegative")
         if (not isinstance(self.trajectory_candidates, int)
                 or isinstance(self.trajectory_candidates, bool)
                 or self.trajectory_candidates < 2):

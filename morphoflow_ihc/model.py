@@ -34,6 +34,12 @@ def regional_velocity_mse(prediction, target, window):
     return torch.stack(losses).mean()
 
 
+def pixel_velocity_mse(prediction, target):
+    if prediction.shape != target.shape or prediction.ndim != 4:
+        raise ValueError("CFM velocity tensors must have identical BCHW shapes")
+    return (prediction.float() - target.float()).square().mean()
+
+
 def single_step_endpoint(state, time, velocity):
     """Legacy bridge endpoint helper; not used for generated-image losses."""
     time = time.reshape(-1, *([1] * (state.ndim - 1)))
@@ -89,7 +95,10 @@ class StainFlow(nn.Module):
         # Pair crops can be locally misregistered. Supervise conditional
         # velocity at regional scale over four grid phases. This preserves
         # coarse spatial expression but does not imply cell-level matching.
-        flow_loss = regional_velocity_mse(prediction, target_velocity, self.cfg.flow_region)
+        if self.cfg.flow_objective == "pixel":
+            flow_loss = pixel_velocity_mse(prediction, target_velocity)
+        else:
+            flow_loss = regional_velocity_mse(prediction, target_velocity, self.cfg.flow_region)
 
         # Use the same noise-to-endpoint solver path for auxiliary generator
         # losses that is used at inference. A CFM bridge state z contains part
@@ -97,7 +106,8 @@ class StainFlow(nn.Module):
         # PatchNCE/PatchGAN see a different distribution from deployment.
         from .trajectory import sample_rgb
         generated = sample_rgb(self, he, marker, torch.randn_like(he), policy)
-        nce_loss = self.morphology_loss(he, generated) if self.cfg.nce_weight else flow_loss.new_zeros(())
+        nce_loss = (self.morphology_loss(he, generated) if self.cfg.nce_weight
+                    else flow_loss.new_zeros(()))
         return flow_loss, nce_loss, generated
 
 

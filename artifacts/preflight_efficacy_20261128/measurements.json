@@ -1,0 +1,363 @@
+{
+  "source_branch": "run/preformal-efficacy-20261128",
+  "source_base_commit": "0440ae5d73cd949911df9db6de5dc888a11abf90",
+  "environment": {
+    "python": "3.12.4",
+    "torch": "2.7.1+cu128",
+    "cuda_runtime": "12.8",
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "gpu_bf16_supported": true,
+    "pytest": "28 passed"
+  },
+  "pilot_split_sha256": "1516adc09790bd44a0b855cc3490f34bf7e70f2fee047655d9aa496ce381e841",
+  "pilot_split_file": "artifacts/preflight_efficacy_20261128/pilot_split.json",
+  "runs": {
+    "regional_baseline": {
+      "checkpoint_format": 11,
+      "stage": "flow",
+      "step_or_groups": 2,
+      "checkpoint_sha256": "3444833d1b10792ac60f17f5db141cf0f4195034c49c4e17890daff284ba370c",
+      "config": {
+        "flow_objective": "regional",
+        "nce_weight": 0.1,
+        "adversarial_weight": 0.1
+      },
+      "logged_updates": [
+        {
+          "stage": "flow",
+          "event": "start",
+          "step": 0,
+          "target": 2,
+          "amp": "auto",
+          "run": {
+            "cache_index_sha256": "77596d0f54de3a17225af57334adeec6422588da2e0c28cc92097d3d92017e49",
+            "seed": 20261128,
+            "batch": 1,
+            "amp": "torch.bfloat16"
+          }
+        },
+        {
+          "stage": "flow",
+          "step": 1,
+          "flow_loss": 0.09135784953832626,
+          "nce_loss": 4.721921443939209,
+          "critic_loss": 0.7093701958656311,
+          "adversarial_loss": 0.6931591629981995
+        },
+        {
+          "stage": "flow",
+          "step": 2,
+          "flow_loss": 0.37634003162384033,
+          "nce_loss": 4.311775207519531,
+          "critic_loss": 0.689480721950531,
+          "adversarial_loss": 0.6962401866912842
+        },
+        {
+          "stage": "flow",
+          "step": 2,
+          "target": 2,
+          "file": "runs\\preflight_efficacy_20261128\\regional_baseline.pt"
+        }
+      ],
+      "cache_index_sha256": "77596d0f54de3a17225af57334adeec6422588da2e0c28cc92097d3d92017e49",
+      "seed": 20261128,
+      "batch": 1,
+      "amp": "torch.bfloat16"
+    },
+    "pixel_cfm": {
+      "checkpoint_format": 11,
+      "stage": "flow",
+      "step_or_groups": 2,
+      "checkpoint_sha256": "99e9f7a227f08c4ad58d81913f34d1775c269b349efbc4ee5eb4e4e7b76a49c4",
+      "config": {
+        "flow_objective": "pixel",
+        "nce_weight": 0.1,
+        "adversarial_weight": 0.1
+      },
+      "logged_updates": [
+        {
+          "stage": "flow",
+          "event": "start",
+          "step": 0,
+          "target": 2,
+          "amp": "auto",
+          "run": {
+            "cache_index_sha256": "77596d0f54de3a17225af57334adeec6422588da2e0c28cc92097d3d92017e49",
+            "seed": 20261128,
+            "batch": 1,
+            "amp": "torch.bfloat16"
+          }
+        },
+        {
+          "stage": "flow",
+          "step": 1,
+          "flow_loss": 1.1244057416915894,
+          "nce_loss": 4.721921443939209,
+          "critic_loss": 0.7093701958656311,
+          "adversarial_loss": 0.6931591629981995
+        },
+        {
+          "stage": "flow",
+          "step": 2,
+          "flow_loss": 1.3931773900985718,
+          "nce_loss": 4.311841011047363,
+          "critic_loss": 0.689486026763916,
+          "adversarial_loss": 0.6961849331855774
+        },
+        {
+          "stage": "flow",
+          "step": 2,
+          "target": 2,
+          "file": "runs\\preflight_efficacy_20261128\\pixel_cfm.pt"
+        }
+      ],
+      "cache_index_sha256": "77596d0f54de3a17225af57334adeec6422588da2e0c28cc92097d3d92017e49",
+      "seed": 20261128,
+      "batch": 1,
+      "amp": "torch.bfloat16"
+    },
+    "nce_off": {
+      "checkpoint_format": 11,
+      "stage": "flow",
+      "step_or_groups": 2,
+      "checkpoint_sha256": "23e7103accdf466e2db67b0f365d24cb997799680fdb4b47171a85ad93eac41b",
+      "config": {
+        "flow_objective": "regional",
+        "nce_weight": 0.0,
+        "adversarial_weight": 0.1
+      },
+      "logged_updates": [
+        {
+          "stage": "flow",
+          "event": "start",
+          "step": 0,
+          "target": 2,
+          "amp": "auto",
+          "run": {
+            "cache_index_sha256": "77596d0f54de3a17225af57334adeec6422588da2e0c28cc92097d3d92017e49",
+            "seed": 20261128,
+            "batch": 1,
+            "amp": "torch.bfloat16"
+          }
+        },
+        {
+          "stage": "flow",
+          "step": 1,
+          "flow_loss": 0.09135784953832626,
+          "nce_loss": 0.0,
+          "critic_loss": 0.7093701958656311,
+          "adversarial_loss": 0.6931591629981995
+        },
+        {
+          "stage": "flow",
+          "step": 2,
+          "flow_loss": 0.3733420968055725,
+          "nce_loss": 0.0,
+          "critic_loss": 0.6894731521606445,
+          "adversarial_loss": 0.6962782740592957
+        },
+        {
+          "stage": "flow",
+          "step": 2,
+          "target": 2,
+          "file": "runs\\preflight_efficacy_20261128\\nce_off.pt"
+        }
+      ],
+      "cache_index_sha256": "77596d0f54de3a17225af57334adeec6422588da2e0c28cc92097d3d92017e49",
+      "seed": 20261128,
+      "batch": 1,
+      "amp": "torch.bfloat16"
+    },
+    "gan_off": {
+      "checkpoint_format": 11,
+      "stage": "flow",
+      "step_or_groups": 2,
+      "checkpoint_sha256": "98ed9b3af54123aa793fe18db3b6a67ceb7edd681070ab2fdfc88adef686685f",
+      "config": {
+        "flow_objective": "regional",
+        "nce_weight": 0.1,
+        "adversarial_weight": 0.0
+      },
+      "logged_updates": [
+        {
+          "stage": "flow",
+          "event": "start",
+          "step": 0,
+          "target": 2,
+          "amp": "auto",
+          "run": {
+            "cache_index_sha256": "77596d0f54de3a17225af57334adeec6422588da2e0c28cc92097d3d92017e49",
+            "seed": 20261128,
+            "batch": 1,
+            "amp": "torch.bfloat16"
+          }
+        },
+        {
+          "stage": "flow",
+          "step": 1,
+          "flow_loss": 0.09135784953832626,
+          "nce_loss": 4.721921443939209,
+          "critic_loss": 0.0,
+          "adversarial_loss": 0.0
+        },
+        {
+          "stage": "flow",
+          "step": 2,
+          "flow_loss": 0.37634003162384033,
+          "nce_loss": 4.311775207519531,
+          "critic_loss": 0.0,
+          "adversarial_loss": 0.0
+        },
+        {
+          "stage": "flow",
+          "step": 2,
+          "target": 2,
+          "file": "runs\\preflight_efficacy_20261128\\gan_off.pt"
+        }
+      ],
+      "cache_index_sha256": "77596d0f54de3a17225af57334adeec6422588da2e0c28cc92097d3d92017e49",
+      "seed": 20261128,
+      "batch": 1,
+      "amp": "torch.bfloat16"
+    },
+    "ppo": {
+      "checkpoint_format": 11,
+      "stage": "rl",
+      "step_or_groups": 2,
+      "checkpoint_sha256": "d53a5c1754a17e545c49617fc47059e56d747bc71a6c42edd0dfcf772aa0236b",
+      "config": {
+        "flow_objective": "regional",
+        "nce_weight": 0.1,
+        "adversarial_weight": 0.1
+      },
+      "logged_updates": [
+        {
+          "stage": "rl",
+          "groups": 1,
+          "reward": 0.6578503847122192,
+          "spread": 3.5762786865234375e-06,
+          "spread_median": 3.5762786865234375e-06,
+          "signal_fraction": 0.0,
+          "candidate0_win_rate": 0.0,
+          "accepted": 0,
+          "policy_loss": 0.0,
+          "kl": 0.0,
+          "flow_loss": 0.07956098020076752,
+          "nce_loss": 4.706057548522949,
+          "critic_loss": 0.676711916923523,
+          "adversarial_loss": 0.695160984992981,
+          "objective": "ppo",
+          "lr_factor": 0.9090909090909091,
+          "policy_lr": 9.090909090909091e-06,
+          "flow_lr": 0.00018181818181818183,
+          "critic_lr": 0.00018181818181818183
+        },
+        {
+          "stage": "rl",
+          "groups": 2,
+          "reward": 0.4708401560783386,
+          "spread": 6.67572021484375e-06,
+          "spread_median": 6.67572021484375e-06,
+          "signal_fraction": 0.0,
+          "candidate0_win_rate": 1.0,
+          "accepted": 0,
+          "policy_loss": 0.0,
+          "kl": 0.0,
+          "flow_loss": 0.3518275022506714,
+          "nce_loss": 4.304417610168457,
+          "critic_loss": 0.6411306858062744,
+          "adversarial_loss": 0.6926870346069336,
+          "objective": "ppo",
+          "lr_factor": 0.9090909090909091,
+          "policy_lr": 9.090909090909091e-06,
+          "flow_lr": 0.00018181818181818183,
+          "critic_lr": 0.00018181818181818183
+        },
+        {
+          "stage": "rl",
+          "groups": 2,
+          "target": 2,
+          "file": "runs\\preflight_efficacy_20261128\\ppo.pt"
+        }
+      ],
+      "cache_index_sha256": "77596d0f54de3a17225af57334adeec6422588da2e0c28cc92097d3d92017e49",
+      "seed": 20261128,
+      "batch": 1,
+      "amp": "torch.bfloat16"
+    },
+    "zero_action": {
+      "checkpoint_format": 11,
+      "stage": "rl",
+      "step_or_groups": 2,
+      "checkpoint_sha256": "765b8118b1f35402f316c844f5cefd641a291b781c7803b00075f6f9840e53e8",
+      "config": {
+        "flow_objective": "regional",
+        "nce_weight": 0.1,
+        "adversarial_weight": 0.1
+      },
+      "logged_updates": [
+        {
+          "stage": "rl",
+          "groups": 1,
+          "reward": 0.0,
+          "spread": 0.0,
+          "spread_median": 0.0,
+          "signal_fraction": 0.0,
+          "candidate0_win_rate": 0.0,
+          "accepted": 0,
+          "policy_loss": 0.0,
+          "kl": 0.0,
+          "flow_loss": 0.07956098020076752,
+          "nce_loss": 4.706057548522949,
+          "critic_loss": 0.676711916923523,
+          "adversarial_loss": 0.695160984992981,
+          "objective": "ppo",
+          "lr_factor": 0.9090909090909091,
+          "policy_lr": 9.090909090909091e-06,
+          "flow_lr": 0.00018181818181818183,
+          "critic_lr": 0.00018181818181818183
+        },
+        {
+          "stage": "rl",
+          "groups": 2,
+          "reward": 0.0,
+          "spread": 0.0,
+          "spread_median": 0.0,
+          "signal_fraction": 0.0,
+          "candidate0_win_rate": 0.0,
+          "accepted": 0,
+          "policy_loss": 0.0,
+          "kl": 0.0,
+          "flow_loss": 0.35182660818099976,
+          "nce_loss": 4.305253982543945,
+          "critic_loss": 0.6411219239234924,
+          "adversarial_loss": 0.6926990151405334,
+          "objective": "ppo",
+          "lr_factor": 0.9090909090909091,
+          "policy_lr": 9.090909090909091e-06,
+          "flow_lr": 0.00018181818181818183,
+          "critic_lr": 0.00018181818181818183
+        },
+        {
+          "stage": "rl",
+          "groups": 2,
+          "target": 2,
+          "file": "runs\\preflight_efficacy_20261128\\zero_action.pt"
+        }
+      ],
+      "cache_index_sha256": "77596d0f54de3a17225af57334adeec6422588da2e0c28cc92097d3d92017e49",
+      "seed": 20261128,
+      "batch": 1,
+      "amp": "torch.bfloat16"
+    }
+  },
+  "log_sha256": {
+    "gan_off": "a2355f81e5461b3449a9ffb46ede2b9c8c88d5fac3cea4c8735d39f21ac62c76",
+    "nce_off": "84de0f6af3d53e891c704646a5375c0295d4ff7a2c8bf3bf207a44fd3b7da640",
+    "pixel_cfm": "13efc26470f05348d082913b9ddb5ec7c6332f93df7e97f8fd8baa63ca72df11",
+    "ppo": "7b3e9c544f55e976a473fbb9c947c998cd892f4574deda30bb43731e7197443b",
+    "regional_baseline": "e9d9ce6992b19ab68166bed37fdbbb7db27591ac5af5b8aeb537e58f9631e03e",
+    "zero_action": "b5d5d2948a224124d2db4aa57141e8ca5fed5fc0a7b6a73b3a3b4703b4494d1c"
+  },
+  "checkpoint_policy": "checkpoint files remain local and are not committed"
+}

@@ -57,7 +57,7 @@ def make_grad_scaler(device, mode="auto"):
     return torch.amp.GradScaler("cuda")
 
 
-CHECKPOINT_FORMAT = 10
+CHECKPOINT_FORMAT = 11
 
 
 def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_optimizer=None, policy_objective=None,
@@ -81,8 +81,8 @@ def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_opt
 
 def open_checkpoint(path, device, *, allow_legacy=False):
     state = torch.load(path, map_location="cpu", weights_only=True)
-    if state.get("format") not in ({9, CHECKPOINT_FORMAT} if allow_legacy else {CHECKPOINT_FORMAT}) or state.get("stage") not in {"flow", "rl"}:
-        raise ValueError("Incompatible training checkpoint. Start a fresh format 10 run")
+    if state.get("format") not in ({9, 10, CHECKPOINT_FORMAT} if allow_legacy else {CHECKPOINT_FORMAT}) or state.get("stage") not in {"flow", "rl"}:
+        raise ValueError("Incompatible training checkpoint. Start a fresh format 11 run")
     # Checkpoints written before group-normalized PPO stored a fixed
     # `advantage_scale`; it is obsolete under the current reward-signal gate.
     config = dict(state["config"])
@@ -90,6 +90,7 @@ def open_checkpoint(path, device, *, allow_legacy=False):
     # Preserve the two-candidate behavior of pre-v4 policy checkpoints when resuming.
     if state["stage"] == "rl" and "trajectory_candidates" not in config:
         config["trajectory_candidates"] = 2
+    config.setdefault("flow_objective", "regional")
     model = StainFlow(Config(**config))
     model.load_state_dict(state["model"])
     model.to(device)
@@ -157,9 +158,11 @@ def maps_40_10_lr_factor(epoch_index, constant_epochs=40, decay_epochs=10):
 
 def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=None, scaler=None, amp="auto"):
     cfg = model.cfg
+    critic_enabled = cfg.adversarial_weight > 0
     scale_before = scaler.get_scale() if scaler is not None and scaler.is_enabled() else None
     optimizer.zero_grad(set_to_none=True)
-    critic_optimizer.zero_grad(set_to_none=True)
+    if critic_enabled:
+        critic_optimizer.zero_grad(set_to_none=True)
     policy_grad_state = [p.requires_grad for p in policy.parameters()] if policy is not None else None
     if policy is not None:
         # The policy is optimized by PPO/direct updates; here its action is a
@@ -170,25 +173,30 @@ def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=No
     try:
         with precision(he.device, amp):
             flow_loss, nce_loss, fake = model.losses(image, he, marker, policy=policy)
-            critic_loss = 0.5 * (F.softplus(-model.critic(image, marker)).mean()
-                                 + F.softplus(model.critic(fake.detach(), marker)).mean())
+            if critic_enabled:
+                critic_loss = 0.5 * (F.softplus(-model.critic(image, marker)).mean()
+                                     + F.softplus(model.critic(fake.detach(), marker)).mean())
+            else:
+                critic_loss = flow_loss.new_zeros(())
         if not torch.isfinite(critic_loss):
             raise FloatingPointError("Nonfinite critic loss")
-        (scaler.scale(critic_loss) if scaler is not None else critic_loss).backward()
-        if scaler is not None:
-            scaler.unscale_(critic_optimizer)
-        torch.nn.utils.clip_grad_norm_(model.critic.parameters(), 1.0,
-                                      error_if_nonfinite=scaler is None)
-        if scaler is not None:
-            scaler.step(critic_optimizer)
-        else:
-            critic_optimizer.step()
-        critic_optimizer.zero_grad(set_to_none=True)
+        if critic_enabled:
+            (scaler.scale(critic_loss) if scaler is not None else critic_loss).backward()
+            if scaler is not None:
+                scaler.unscale_(critic_optimizer)
+            torch.nn.utils.clip_grad_norm_(model.critic.parameters(), 1.0,
+                                          error_if_nonfinite=scaler is None)
+            if scaler is not None:
+                scaler.step(critic_optimizer)
+            else:
+                critic_optimizer.step()
+            critic_optimizer.zero_grad(set_to_none=True)
 
         model.critic.eval().requires_grad_(False)
         try:
             with precision(he.device, amp):
-                adversarial_loss = F.softplus(-model.critic(fake, marker)).mean()
+                adversarial_loss = (F.softplus(-model.critic(fake, marker)).mean()
+                                    if critic_enabled else flow_loss.new_zeros(()))
                 loss = flow_loss + cfg.nce_weight * nce_loss + cfg.adversarial_weight * adversarial_loss
             if not torch.isfinite(loss):
                 raise FloatingPointError("Nonfinite flow training loss")
@@ -293,7 +301,8 @@ def train_policy(args):
             for group in optimizer.param_groups:
                 group["lr"] = policy_lr
     dataset = IHCCrops(args.cache, cfg)
-    run = {**training_run(args, dataset, device), "decay_epochs": args.epochs}
+    run = {**training_run(args, dataset, device), "decay_epochs": args.epochs,
+           "zero_action": args.zero_action}
     if (state.get("run") or {}).get("cache_index_sha256") != dataset.fingerprint:
         raise ValueError("Joint training requires the same training cache as the Flow checkpoint")
     if state["stage"] == "rl":
@@ -325,16 +334,24 @@ def train_policy(args):
         # Keep this rollout's environment fixed through its policy update.
         model.eval().requires_grad_(False)
         try:
-            with precision(device, args.amp), torch.set_grad_enabled(direct):
-                experience = collect(model, policy, he, image, marker, direct=direct)
-            if direct:
-                stats = direct_policy_update(policy, optimizer, experience, cfg, scaler=scaler)
+            if args.zero_action:
+                stats = {"reward": 0.0, "spread": 0.0, "spread_median": 0.0,
+                         "signal_fraction": 0.0, "candidate0_win_rate": 0.0,
+                         "accepted": 0, "policy_loss": 0.0, "kl": 0.0}
             else:
-                stats = policy_update(policy, optimizer, experience, cfg)
+                with precision(device, args.amp), torch.set_grad_enabled(direct):
+                    experience = collect(model, policy, he, image, marker, direct=direct)
+                if direct:
+                    stats = direct_policy_update(policy, optimizer, experience, cfg, scaler=scaler)
+                else:
+                    stats = policy_update(policy, optimizer, experience, cfg)
         finally:
             model.train().requires_grad_(True)
+        # Keep generator-side randomness matched between PPO and zero-action arms.
+        torch.manual_seed(args.seed + groups)
         stats.update(flow_update(model, flow_optimizer, critic_optimizer, image, he, marker,
-                                 policy=policy, scaler=scaler, amp=args.amp))
+                                 policy=None if args.zero_action else policy,
+                                 scaler=scaler, amp=args.amp))
         stats["objective"] = objective
         stats["lr_factor"] = lr_factor
         stats["policy_lr"] = optimizer.param_groups[0]["lr"]

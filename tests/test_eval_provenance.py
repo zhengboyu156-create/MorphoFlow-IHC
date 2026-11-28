@@ -56,7 +56,7 @@ def test_rl_eval_provenance_distinguishes_policy_ablation_and_legacy(evaluator, 
     assert disabled["checkpoint_stage"] == "rl" and disabled["training_objective_verified"]
     state["format"] = 9
     torch.save(state, path)
-    with pytest.raises(ValueError, match="format 10"):
+    with pytest.raises(ValueError, match="format 11"):
         evaluator.checkpoint_for_evaluation(args, cfg, device, load_model=False)
     args.allow_historical_weights = True
     _, _, historical = evaluator.checkpoint_for_evaluation(args, cfg, device, load_model=False)

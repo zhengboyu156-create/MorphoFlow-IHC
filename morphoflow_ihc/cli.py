@@ -53,6 +53,7 @@ def main(argv=None):
     flow.add_argument("--epochs", type=positive_int, default=40)
     flow.add_argument("--steps", type=positive_int)
     flow.add_argument("--resume", type=Path)
+    flow.add_argument("--flow-objective", choices=("regional", "pixel"))
 
     policy = sub.add_parser("train-rl", help="Optimize the bounded velocity policy at one time step")
     training_options(policy, 6.0, 1)
@@ -61,6 +62,8 @@ def main(argv=None):
     policy.add_argument("--epochs", type=positive_int, default=10)
     policy.add_argument("--groups", type=positive_int)
     policy.add_argument("--policy-lr", type=duration, help="Explicit policy learning rate")
+    policy.add_argument("--zero-action", action="store_true",
+                        help="Continue Flow/critic updates with no PPO rollout or policy-guided generator action")
 
     prediction = sub.add_parser("infer", help="Generate native-size IHC from H&E and a marker")
     prediction.add_argument("--checkpoint", type=Path, required=True)
@@ -96,7 +99,10 @@ def main(argv=None):
         else:
             from . import engine
             if args.command == "train":
-                engine.train_flow(args, read_config(args.config))
+                cfg = read_config(args.config)
+                if args.flow_objective is not None:
+                    cfg.flow_objective = args.flow_objective
+                engine.train_flow(args, cfg)
             elif args.command == "train-rl":
                 engine.train_policy(args)
             elif args.command == "infer":

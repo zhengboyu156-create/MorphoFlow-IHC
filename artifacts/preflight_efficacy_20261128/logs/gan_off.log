@@ -1,0 +1,4 @@
+{"stage": "flow", "event": "start", "step": 0, "target": 2, "amp": "auto", "run": {"cache_index_sha256": "77596d0f54de3a17225af57334adeec6422588da2e0c28cc92097d3d92017e49", "seed": 20261128, "batch": 1, "amp": "torch.bfloat16"}}
+{"stage": "flow", "step": 1, "flow_loss": 0.09135784953832626, "nce_loss": 4.721921443939209, "critic_loss": 0.0, "adversarial_loss": 0.0}
+{"stage": "flow", "step": 2, "flow_loss": 0.37634003162384033, "nce_loss": 4.311775207519531, "critic_loss": 0.0, "adversarial_loss": 0.0}
+{"stage": "flow", "step": 2, "target": 2, "file": "runs\\preflight_efficacy_20261128\\gan_off.pt"}

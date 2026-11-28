@@ -22,6 +22,9 @@ def test_default_flow_region_fits_crop_and_preserves_64px_training_scale():
     standard = Config(crop=256, region=32)
     assert tiny.flow_region == 32
     assert standard.flow_region == 64
+    assert Config(flow_objective="pixel").flow_objective == "pixel"
+    with pytest.raises(ValueError, match="flow_objective"):
+        Config(flow_objective="unknown")
 
 
 def test_reward_rejects_uniform_typing_and_respects_absent_classes():
@@ -250,7 +253,7 @@ def test_amp_modes_keep_cpu_in_fp32_and_reject_cpu_half_precision():
         amp_dtype(cpu, "fp16")
 
 
-def test_patchnce_reaches_rgb_generator_and_old_checkpoints_rejected(tmp_path):
+def test_patchnce_reaches_rgb_generator_and_old_checkpoints_rejected(tmp_path, monkeypatch):
     from morphoflow_ihc.model import StainFlow
     from morphoflow_ihc.engine import open_checkpoint
     torch.set_num_threads(2)
@@ -264,6 +267,15 @@ def test_patchnce_reaches_rgb_generator_and_old_checkpoints_rejected(tmp_path):
     assert torch.isfinite(nce) and nce.item() > 0
     assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.net.parameters())
     assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.patch_encoder.parameters())
+    no_nce_cfg = Config(markers={"HER2": 0.35}, crop=32, region=8, context=16,
+                        overlap=8, channel_mult=(1, 1), ode_steps=4, action_step=2,
+                        nce_weight=0)
+    no_nce_model = StainFlow(no_nce_cfg)
+    def unexpected_nce(*_):
+        raise AssertionError("NCE-off must skip morphology feature and patch computation")
+    monkeypatch.setattr(no_nce_model, "morphology_loss", unexpected_nce)
+    _, skipped_nce, _ = no_nce_model.losses(rgb, he, torch.tensor([0]))
+    assert skipped_nce.item() == 0
     old = tmp_path / 'old.pt'
     torch.save({'format': 1, 'stage': 'flow'}, old)
     with pytest.raises(ValueError, match='(?i)checkpoint'):
@@ -272,10 +284,10 @@ def test_patchnce_reaches_rgb_generator_and_old_checkpoints_rejected(tmp_path):
     legacy_config = asdict(cfg) | {'advantage_scale': 0.01}
     torch.save({'format': 8, 'stage': 'flow', 'config': legacy_config,
                 'model': model.state_dict()}, legacy)
-    with pytest.raises(ValueError, match='format 10'):
+    with pytest.raises(ValueError, match='format 11'):
         open_checkpoint(legacy, torch.device('cpu'))
-    torch.save({"format": 9, "stage": "flow", "config": asdict(cfg), "model": model.state_dict()}, legacy)
-    with pytest.raises(ValueError, match="format 10"):
+    torch.save({"format": 10, "stage": "flow", "config": asdict(cfg), "model": model.state_dict()}, legacy)
+    with pytest.raises(ValueError, match="format 11"):
         open_checkpoint(legacy, torch.device("cpu"))
     open_checkpoint(legacy, torch.device("cpu"), allow_legacy=True)
 
