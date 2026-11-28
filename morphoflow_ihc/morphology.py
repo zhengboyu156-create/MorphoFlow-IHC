@@ -33,13 +33,12 @@ def hematoxylin_map(image: torch.Tensor, cfg, domain: str) -> torch.Tensor:
         raise ValueError(f"Unsupported morphology domain: {domain}")
     rgb = ((image.float() + 1) / 2).clamp(0, 1)
     optical_density = -torch.log((rgb * 255 + 1) / 256)
-    h = _unit(image, cfg.stain_h)
-    other = _unit(image, cfg.stain_e if domain == "HE" else cfg.stain_d)
-    projection = h - torch.dot(h, other) * other
-    denominator = torch.dot(projection, h)
-    if denominator <= 1e-5:
-        raise ValueError("Stain vectors are nearly collinear")
-    return torch.einsum("c,bchw->bhw", projection, optical_density)[:, None].div(denominator).clamp_min(0)
+    with torch.autocast(image.device.type, enabled=False):
+        h = _unit(optical_density, cfg.stain_h)
+        other = _unit(optical_density, cfg.stain_e if domain == "HE" else cfg.stain_d)
+        projection = h - torch.dot(h, other) * other
+        denominator = torch.dot(projection, h)
+        return torch.einsum("c,bchw->bhw", projection, optical_density)[:, None].div(denominator).clamp_min(0)
 
 
 def morphology_channels(image: torch.Tensor, cfg, domain: str) -> torch.Tensor:
@@ -49,12 +48,18 @@ def morphology_channels(image: torch.Tensor, cfg, domain: str) -> torch.Tensor:
     sobel_x = torch.tensor(((-1, 0, 1), (-2, 0, 2), (-1, 0, 1)), dtype=dtype, device=device)[None, None] / 8
     sobel_y = sobel_x.transpose(-1, -2)
     laplace = torch.tensor(((0, 1, 0), (1, -4, 1), (0, 1, 0)), dtype=dtype, device=device)[None, None]
-    gx = F.conv2d(h, sobel_x, padding=1)
-    gy = F.conv2d(h, sobel_y, padding=1)
+    gx = F.conv2d(h, sobel_x, padding=1).float()
+    gy = F.conv2d(h, sobel_y, padding=1).float()
     gradient = torch.sqrt(gx.square() + gy.square() + 1e-8)
     curvature = F.conv2d(h, laplace, padding=1).abs()
     scale = h.flatten(2).mean(-1, keepdim=True).clamp_min(1e-3)[:, :, None]
     return torch.cat((h / scale, gradient / scale, curvature / scale), dim=1).clamp(0, 8)
+
+
+def morphology_weights(structure, target):
+    local = F.adaptive_avg_pool2d(structure[:, :2], target)
+    hematoxylin_level, edge_level = local[:, :1], local[:, 1:2]
+    return torch.cat((hematoxylin_level, edge_level, -(hematoxylin_level + edge_level)), dim=1).softmax(1)
 
 
 class BasicBlock(nn.Module):
@@ -105,8 +110,4 @@ class LocalMorphologyFPN(nn.Module):
         pyramid = [F.interpolate(layer(value), target, mode="bilinear", align_corners=False)
                    for layer, value in zip(self.smooth, (p1, p2, p3))]
         features = self.fuse(torch.cat(pyramid, dim=1))
-        local = F.adaptive_avg_pool2d(structure[:, :2], target)
-        hematoxylin_level, edge_level = local[:, :1], local[:, 1:2]
-        residual_context = -(hematoxylin_level + edge_level)
-        weights = torch.cat((hematoxylin_level, edge_level, residual_context), dim=1).softmax(1)
-        return features, weights
+        return features, morphology_weights(structure, target)

@@ -3,6 +3,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from torchcfm import ConditionalFlowMatcher
 from torchcfm.models.unet.unet import UNetModel
 
@@ -52,9 +53,9 @@ class StainFlow(nn.Module):
             num_res_blocks=cfg.residual_blocks,
             attention_resolutions=(),
             num_classes=len(cfg.markers),
-            # 512px crops exceed the 2080 Ti memory budget without recomputing
-            # residual-block activations during backward.
-            use_checkpoint=True,
+            # TorchCFM's custom backward does not restore autocast. Recompute
+            # via PyTorch's non-reentrant checkpoint instead.
+            use_checkpoint=False,
         )
         self.patch_encoder = LocalMorphologyFPN(cfg.morphology_width, cfg.morphology_channels)
         self.patch_sampler = PatchSampleF(cfg.morphology_channels, cfg.patch_projection_dim)
@@ -62,14 +63,19 @@ class StainFlow(nn.Module):
         self.matcher = ConditionalFlowMatcher(sigma=0.0)
 
     def velocity(self, t, z, image, marker):
-        features = torch.cat((z, image), 1)
-        return self.net(t, features, y=marker).float()
+        def predict(time, state, he, labels):
+            return self.net(time, torch.cat((state, he), 1), y=labels).float()
+
+        if torch.is_grad_enabled():
+            return checkpoint(predict, t, z, image, marker, use_reentrant=False)
+        return predict(t, z, image, marker)
 
     def morphology(self, image, domain):
         return self.patch_encoder(morphology_channels(image, self.cfg, domain))
 
     def morphology_loss(self, he, generated):
-        source, _ = self.morphology(he, "HE")
+        with torch.no_grad():
+            source, _ = self.morphology(he, "HE")
         output, _ = self.morphology(generated, "IHC")
         return paired_patchnce(source, output, self.patch_sampler,
                                patches=self.cfg.nce_patches,
@@ -91,7 +97,8 @@ class StainFlow(nn.Module):
         # PatchNCE/PatchGAN see a different distribution from deployment.
         from .trajectory import sample_rgb
         generated = sample_rgb(self, he, marker, torch.randn_like(he), policy)
-        return flow_loss, self.morphology_loss(he, generated), generated
+        nce_loss = self.morphology_loss(he, generated) if self.cfg.nce_weight else flow_loss.new_zeros(())
+        return flow_loss, nce_loss, generated
 
 
 class IHCCritic(nn.Module):
@@ -141,9 +148,13 @@ class VelocityPolicy(nn.Module):
         nn.init.zeros_(self.net[-1].bias)
 
     def observation(self, h, z, velocity, compartments):
+        if min(h.shape[-2:]) < self.region:
+            raise ValueError("Policy inference needs an image at least as wide and tall as its region")
         coarse = F.avg_pool2d(torch.cat((h, z, velocity), 1), self.region)
         compartments = F.adaptive_avg_pool2d(compartments, coarse.shape[-2:])
         return torch.cat((coarse, compartments), 1).float()
 
     def forward(self, state):
-        return self.net(state).float().clamp(-5, 5)
+        # Rollout, likelihood recomputation and deployment share FP32 policy means.
+        with torch.autocast(state.device.type, enabled=False):
+            return self.net(state.float()).clamp(-5, 5)

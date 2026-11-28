@@ -63,6 +63,7 @@ def paired_patchnce(source: torch.Tensor, generated: torch.Tensor, sampler: Patc
     if count < 2:
         raise ValueError("PatchNCE needs at least two feature-map positions")
     patch_ids = torch.randperm(spatial, device=source.device)[:count]
-    key = sampler(source, patch_ids)
+    with torch.no_grad():
+        key = sampler(source, patch_ids)
     query = sampler(generated, patch_ids)
     return PatchNCELoss(temperature)(query, key)

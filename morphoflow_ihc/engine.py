@@ -3,6 +3,7 @@
 from contextlib import nullcontext
 from dataclasses import asdict
 import json
+import math
 from pathlib import Path
 import time
 
@@ -53,25 +54,18 @@ def make_grad_scaler(device, mode="auto"):
     dtype = amp_dtype(device, mode)
     if device.type != "cuda" or dtype != torch.float16:
         return None
-    return torch.cuda.amp.GradScaler()
+    return torch.amp.GradScaler("cuda")
 
 
-def disable_unet_checkpointing_for_fp16(model, device, mode="auto"):
-    if amp_dtype(device, mode) != torch.float16:
-        return 0
-    disabled = 0
-    for module in model.net.modules():
-        if getattr(module, "use_checkpoint", False):
-            module.use_checkpoint = False
-            disabled += 1
-    return disabled
+CHECKPOINT_FORMAT = 10
 
 
 def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_optimizer=None, policy_objective=None,
-                    flow_optimizer=None, scaler=None):
+                    flow_optimizer=None, scaler=None, run=None):
     state = {
-        "format": 9, "stage": stage, "step": step, "config": asdict(model.cfg),
+        "format": CHECKPOINT_FORMAT, "stage": stage, "step": step, "config": asdict(model.cfg),
         "model": model.state_dict(), "optimizer": optimizer.state_dict(),
+        "run": run,
     }
     if critic_optimizer is not None:
         state["critic_optimizer"] = critic_optimizer.state_dict()
@@ -85,10 +79,10 @@ def save_checkpoint(path, model, optimizer, step, stage, policy=None, critic_opt
     atomic_write(path, lambda stream: torch.save(state, stream))
 
 
-def open_checkpoint(path, device):
-    state = torch.load(path, map_location=device, weights_only=True)
-    if state.get("format") != 9 or state.get("stage") not in {"flow", "rl"}:
-        raise ValueError("Checkpoint uses a different flow/critic objective. Start a fresh format 9 run")
+def open_checkpoint(path, device, *, allow_legacy=False):
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    if state.get("format") not in ({9, CHECKPOINT_FORMAT} if allow_legacy else {CHECKPOINT_FORMAT}) or state.get("stage") not in {"flow", "rl"}:
+        raise ValueError("Incompatible training checkpoint. Start a fresh format 10 run")
     # Checkpoints written before group-normalized PPO stored a fixed
     # `advantage_scale`; it is obsolete under the current reward-signal gate.
     config = dict(state["config"])
@@ -96,14 +90,16 @@ def open_checkpoint(path, device):
     # Preserve the two-candidate behavior of pre-v4 policy checkpoints when resuming.
     if state["stage"] == "rl" and "trajectory_candidates" not in config:
         config["trajectory_candidates"] = 2
-    model = StainFlow(Config(**config)).to(device)
+    model = StainFlow(Config(**config))
     model.load_state_dict(state["model"])
+    model.to(device)
     policy = None
     if state["stage"] == "rl":
-        policy = VelocityPolicy(model.cfg).to(device)
+        policy = VelocityPolicy(model.cfg)
         if state.get("policy", {}).get("net.4.weight", torch.empty(0)).shape[0] != 3:
             raise ValueError("Incompatible policy checkpoint: retrain the RGB-channel policy")
         policy.load_state_dict(state["policy"])
+        policy.to(device)
     return model, policy, state
 
 
@@ -112,9 +108,38 @@ def batches(loader):
         yield from loader
 
 
-def make_loader(dataset, batch, workers, device):
-    return DataLoader(dataset, batch_size=batch, shuffle=True, num_workers=workers,
-                      pin_memory=device.type == "cuda", persistent_workers=workers > 0)
+class EpochOrder:
+    """Stable pair order and crop seeds, including the first epoch after resume."""
+
+    def __init__(self, size, seed, consumed):
+        self.size = size
+        self.seed = seed
+        self.epoch, self.offset = divmod(consumed, size)
+
+    def __iter__(self):
+        generator = torch.Generator().manual_seed(self.seed + self.epoch)
+        order = torch.randperm(self.size, generator=generator)
+        seeds = torch.randint(0, (1 << 63) - 1, (self.size,), generator=generator)
+        offset = self.offset
+        self.epoch += 1
+        self.offset = 0
+        return iter(zip(order[offset:].tolist(), seeds[offset:].tolist()))
+
+
+def make_loader(dataset, args, device, consumed):
+    return DataLoader(dataset, batch_size=args.batch, sampler=EpochOrder(len(dataset), args.seed, consumed),
+                      num_workers=args.workers, pin_memory=device.type == "cuda",
+                      persistent_workers=args.workers > 0, generator=torch.Generator().manual_seed(args.seed))
+
+
+def training_run(args, dataset, device):
+    return {"cache_index_sha256": dataset.fingerprint, "seed": args.seed,
+            "batch": args.batch, "amp": str(amp_dtype(device, args.amp) or torch.float32)}
+
+
+def check_resume(state, run):
+    if state.get("run") != run:
+        raise ValueError("Resume requires the same cache index, seed, batch size, precision and LR schedule")
 
 
 def flow_optimizers(model):
@@ -160,7 +185,7 @@ def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=No
             critic_optimizer.step()
         critic_optimizer.zero_grad(set_to_none=True)
 
-        model.critic.requires_grad_(False)
+        model.critic.eval().requires_grad_(False)
         try:
             with precision(he.device, amp):
                 adversarial_loss = F.softplus(-model.critic(fake, marker)).mean()
@@ -178,7 +203,7 @@ def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=No
             else:
                 optimizer.step()
         finally:
-            model.critic.requires_grad_(True)
+            model.critic.train().requires_grad_(True)
     finally:
         if policy is not None:
             for parameter, requires_grad in zip(policy.parameters(), policy_grad_state):
@@ -194,7 +219,6 @@ def flow_update(model, optimizer, critic_optimizer, image, he, marker, policy=No
 def train_flow(args, cfg):
     device = choose_device(args.device)
     torch.manual_seed(args.seed)
-    model = StainFlow(cfg).to(device)
     scaler = make_grad_scaler(device, args.amp)
     step = 0
     if args.resume:
@@ -202,32 +226,40 @@ def train_flow(args, cfg):
         if state["stage"] != "flow" or model.cfg != cfg:
             raise ValueError("Resume requires a flow checkpoint with the same model configuration")
         step = state["step"]
-    checkpointed_blocks = disable_unet_checkpointing_for_fp16(model, device, args.amp)
+    else:
+        model = StainFlow(cfg).to(device)
+    dataset = IHCCrops(args.cache, cfg)
+    run = training_run(args, dataset, device)
+    updates_per_epoch = math.ceil(len(dataset) / args.batch)
+    epoch, offset = divmod(step, updates_per_epoch)
+    loader = make_loader(dataset, args, device, epoch * len(dataset) + offset * args.batch)
     optimizer, critic_optimizer = flow_optimizers(model)
     if args.resume:
+        check_resume(state, run)
         optimizer.load_state_dict(state["optimizer"])
         critic_optimizer.load_state_dict(state["critic_optimizer"])
         if scaler is not None and "grad_scaler" in state:
             scaler.load_state_dict(state["grad_scaler"])
-    dataset = IHCCrops(args.cache, cfg)
-    loader = make_loader(dataset, args.batch, args.workers, device)
-    target = args.steps or args.epochs * len(loader)
+    target = args.steps or args.epochs * updates_per_epoch
+    if step > target:
+        raise ValueError("Flow checkpoint already exceeds the requested update target")
     print(json.dumps({"stage": "flow", "event": "start", "step": step, "target": target,
-                      "amp": args.amp, "checkpointed_blocks_disabled": checkpointed_blocks}), flush=True)
+                      "amp": args.amp, "run": run}), flush=True)
     deadline = None if args.no_time_limit else time.monotonic() + 3600 * args.hours
     for pack in batches(loader):
         if step >= target or (deadline is not None and time.monotonic() >= deadline):
             break
         marker, image, he = (value.to(device, non_blocking=True) for value in pack)
+        torch.manual_seed(args.seed + step)
         stats = flow_update(model, optimizer, critic_optimizer, image, he, marker, scaler=scaler, amp=args.amp)
         step += 1
         if step == 1 or step % args.save_every == 0 or step == target:
             save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer,
-                            scaler=scaler)
+                            scaler=scaler, run=run)
             print(json.dumps({"stage": "flow", "step": step, **stats}), flush=True)
         if step >= target or (deadline is not None and time.monotonic() >= deadline):
             break
-    save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer, scaler=scaler)
+    save_checkpoint(args.output, model, optimizer, step, "flow", critic_optimizer=critic_optimizer, scaler=scaler, run=run)
     print(json.dumps({"stage": "flow", "step": step, "target": target, "file": str(args.output)}))
 
 
@@ -236,7 +268,6 @@ def train_policy(args):
     torch.manual_seed(args.seed)
     model, policy, state = open_checkpoint(args.checkpoint, device)
     scaler = make_grad_scaler(device, args.amp)
-    checkpointed_blocks = disable_unet_checkpointing_for_fp16(model, device, args.amp)
     if scaler is not None and "grad_scaler" in state:
         scaler.load_state_dict(state["grad_scaler"])
     cfg = model.cfg
@@ -253,12 +284,6 @@ def train_policy(args):
     optimizer = torch.optim.AdamW(policy.parameters(), lr=policy_lr)
     groups = 0
     objective = args.objective
-    if objective == "direct":
-        # TorchCFM checkpoint backward is first-order only; direct reward
-        # optimization needs gradients through the generator a second time.
-        for module in model.net.modules():
-            if hasattr(module, "use_checkpoint"):
-                module.use_checkpoint = False
     if state["stage"] == "rl":
         if (state.get("policy_objective") or "ppo") != objective:
             raise ValueError("Start both objectives from the same base flow checkpoint")
@@ -268,10 +293,17 @@ def train_policy(args):
             for group in optimizer.param_groups:
                 group["lr"] = policy_lr
     dataset = IHCCrops(args.cache, cfg)
-    loader = make_loader(dataset, args.batch, args.workers, device)
+    run = {**training_run(args, dataset, device), "decay_epochs": args.epochs}
+    if (state.get("run") or {}).get("cache_index_sha256") != dataset.fingerprint:
+        raise ValueError("Joint training requires the same training cache as the Flow checkpoint")
+    if state["stage"] == "rl":
+        check_resume(state, run)
+    loader = make_loader(dataset, args, device, groups)
     target_groups = args.groups if args.groups is not None else args.epochs * len(dataset)
+    if groups > target_groups or target_groups > args.epochs * len(dataset):
+        raise ValueError("Group target must cover the resume position and fit within the LR decay epochs")
     print(json.dumps({"stage": "rl", "event": "start", "groups": groups, "target": target_groups,
-                      "amp": args.amp, "checkpointed_blocks_disabled": checkpointed_blocks}), flush=True)
+                      "amp": args.amp, "run": run}), flush=True)
     next_save = groups + args.save_every
     deadline = None if args.no_time_limit else time.monotonic() + 3600 * args.hours
     for pack in batches(loader):
@@ -279,14 +311,15 @@ def train_policy(args):
             break
         limit = target_groups - groups
         marker, image, he = (value[:limit].to(device, non_blocking=True) for value in pack)
+        torch.manual_seed(args.seed + groups)
         epoch_index = 40 + groups // len(dataset)
-        lr_factor = maps_40_10_lr_factor(epoch_index)
-        for optimizer, base_lr in (
+        lr_factor = maps_40_10_lr_factor(epoch_index, decay_epochs=args.epochs)
+        for current_optimizer, base_lr in (
             (flow_optimizer, cfg.flow_lr),
             (critic_optimizer, cfg.critic_lr),
             (optimizer, policy_lr),
         ):
-            for param_group in optimizer.param_groups:
+            for param_group in current_optimizer.param_groups:
                 param_group["lr"] = base_lr * lr_factor
         direct = objective == "direct"
         # Keep this rollout's environment fixed through its policy update.
@@ -304,23 +337,26 @@ def train_policy(args):
                                  policy=policy, scaler=scaler, amp=args.amp))
         stats["objective"] = objective
         stats["lr_factor"] = lr_factor
+        stats["policy_lr"] = optimizer.param_groups[0]["lr"]
+        stats["flow_lr"] = flow_optimizer.param_groups[0]["lr"]
+        stats["critic_lr"] = critic_optimizer.param_groups[0]["lr"]
         groups += he.shape[0]
         if groups >= next_save or groups == args.groups or groups == he.shape[0]:
             save_checkpoint(args.output, model, optimizer, groups, "rl", policy, critic_optimizer=critic_optimizer,
-                            policy_objective=objective, flow_optimizer=flow_optimizer, scaler=scaler)
+                            policy_objective=objective, flow_optimizer=flow_optimizer, scaler=scaler, run=run)
             next_save = groups + args.save_every
             print(json.dumps({"stage": "rl", "groups": groups, **stats}), flush=True)
         if groups >= target_groups or (deadline is not None and time.monotonic() >= deadline):
             break
     save_checkpoint(args.output, model, optimizer, groups, "rl", policy, critic_optimizer=critic_optimizer,
-                            policy_objective=objective, flow_optimizer=flow_optimizer, scaler=scaler)
+                            policy_objective=objective, flow_optimizer=flow_optimizer, scaler=scaler, run=run)
     print(json.dumps({"stage": "rl", "groups": groups, "target": target_groups, "file": str(args.output)}))
 
 
 @torch.no_grad()
 def infer(args):
     device = choose_device(args.device)
-    model, policy, _ = open_checkpoint(args.checkpoint, device)
+    model, policy, _ = open_checkpoint(args.checkpoint, device, allow_legacy=True)
     model.eval()
     if policy is not None:
         policy.eval()
@@ -343,6 +379,8 @@ def infer(args):
     noise = torch.randn(image.shape[1:], generator=torch.Generator().manual_seed(args.seed))[None].to(device)
     with precision(device, "fp32"):
         estimate = sample_rgb(model, image, marker, noise, policy)
+    if not torch.isfinite(estimate).all():
+        raise FloatingPointError("Nonfinite model output")
     result = estimate.float().cpu()[0].permute(1,2,0).clamp(-1,1).numpy()
     rendered = Image.fromarray(np.rint((result + 1)*127.5).astype(np.uint8)).resize(native_size, Image.Resampling.BILINEAR)
     atomic_write(args.output, lambda stream: rendered.save(stream, format="PNG"))

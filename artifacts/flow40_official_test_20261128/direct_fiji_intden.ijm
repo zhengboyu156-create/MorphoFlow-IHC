@@ -29,5 +29,6 @@ for (i=0; i<list.length; i++) {
     if (count % 100 == 0) print("measured " + count + " images");
 }
 setBatchMode(false);
+File.saveString(count + "\n", outCsv + ".done");
 print("DONE count=" + count + " csv=" + outCsv);
 run("Quit");

@@ -1,14 +1,13 @@
-"""Match the local MAPS-GAN MIST-HER2 comparison metrics for Flow-40 weights."""
+"""Evaluate Flow and joint checkpoints with the MIST HER2 comparison protocol."""
 
 import argparse
 import csv
-import hashlib
 import json
 import os
 import shutil
 import subprocess
 import time
-from collections import defaultdict
+from tempfile import TemporaryDirectory
 from pathlib import Path
 import sys
 
@@ -16,43 +15,18 @@ import cv2
 import numpy as np
 from PIL import Image
 import torch
-from pytorch_fid.fid_score import calculate_fid_given_paths
+from pytorch_fid.fid_score import IMAGE_EXTENSIONS, calculate_fid_given_paths
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from morphoflow_ihc.config import Config, read_config
-from morphoflow_ihc.engine import precision
-from morphoflow_ihc.model import StainFlow
-from morphoflow_ihc.trajectory import sample_rgb
+from morphoflow_ihc.config import read_config
+from morphoflow_ihc.data import atomic_write, sha256
+from mist_evaluation import checkpoint_for_evaluation, image_seed, official_pairs, predict_rgb, read_pair
 
 
 DEFAULT_FIJI = Path(r"D:\Fiji\Fiji\fiji-windows-x64.exe")
 DEFAULT_MACRO = Path(__file__).resolve().with_name("direct_fiji_intden.ijm")
-
-
-def sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
-def verify_manifest_image(path, row):
-    if not path.is_file():
-        raise FileNotFoundError(path)
-    expected_bytes = int(row["bytes"])
-    if path.stat().st_size != expected_bytes:
-        raise RuntimeError(f"Manifest byte-count mismatch: {path}")
-    expected_hash = row["sha256"].strip().lower()
-    if expected_hash and sha256(path) != expected_hash:
-        raise RuntimeError(f"Manifest SHA-256 mismatch: {path}")
-
-
-def image_seed(base_seed, pair_key):
-    """Derive a stable, distinct random seed for each paired input."""
-    token = f"{int(base_seed)}:{pair_key[0]}/{pair_key[1]}".encode("utf-8")
-    return int.from_bytes(hashlib.sha256(token).digest()[:8], "big") & ((1 << 63) - 1)
+IMAGE_SUFFIXES = {f".{extension}" for extension in IMAGE_EXTENSIONS} | {".tiff"}
 
 
 def stage_images(sources, input_dir):
@@ -70,7 +44,7 @@ def stage_images(sources, input_dir):
         if sha256(dst) != sha256(src):
             raise RuntimeError(f"Staged image hash mismatch: {src} -> {dst}")
     for path in input_dir.iterdir():
-        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".tif", ".tiff"} \
+        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES \
                 and path.name not in expected:
             path.unlink()
 
@@ -78,37 +52,36 @@ def stage_images(sources, input_dir):
 def image_map(folder):
     result = {}
     for path in folder.iterdir():
-        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
+        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES:
             if path.stem in result:
                 raise RuntimeError(f"duplicate image stem: {path.stem} in {folder}")
             result[path.stem] = path
     return result
 
 
-def run_fiji(tag, sources, root, executable, macro_source):
-    # Keep all paths passed to Fiji ASCII-only. The user-facing result folder is
-    # on a Chinese-named Windows path, which can leave the Fiji launcher idle.
-    stage = Path(__file__).resolve().parent / "fiji_ascii" / tag
+def run_fiji(tag, sources, root, executable, macro_source, work_root):
+    work_root.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix="mist-", dir=work_root) as temporary:
+        return run_fiji_staged(tag, sources, root, executable, macro_source, Path(temporary))
+
+
+def run_fiji_staged(tag, sources, root, executable, macro_source, stage):
     input_dir = stage / "images"
     stage_images(sources, input_dir)
-
     output_csv = stage / "intden.csv"
-    output_csv.unlink(missing_ok=True)
     macro = stage / "batch.ijm"
     shutil.copy2(macro_source, macro)
-    log = stage / "fiji.log"
-    command = [str(executable), "--jaunch-skip-console-check", "--allow-multiple",
+    archived_csv = root / f"{tag}_intden.csv"
+    archived_log = root / f"{tag}_fiji.log"
+    command = [str(executable.resolve()), "--jaunch-skip-console-check", "--allow-multiple",
                "-macro", str(macro), f"{input_dir},{output_csv}"]
-    with log.open("w", encoding="utf-8", errors="replace") as stream:
+    with archived_log.open("w", encoding="utf-8", errors="replace") as stream:
         proc = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, timeout=3 * 60 * 60)
-    log_text = log.read_text(encoding="utf-8", errors="replace")
-    completion_marker = f"DONE count={len(sources)}"
-    if completion_marker not in log_text:
-        raise RuntimeError(
-            f"Fiji did not report successful completion for {tag}; exit={proc.returncode}; see {log}"
-        )
+    done = output_csv.with_suffix(".csv.done")
+    if not done.is_file() or done.read_text(encoding="utf-8").strip() != str(len(sources)):
+        raise RuntimeError(f"Fiji did not finish {tag}; exit={proc.returncode}; see {archived_log}")
     if not output_csv.exists():
-        raise RuntimeError(f"Fiji did not write {tag} CSV; exit={proc.returncode}; see {log}")
+        raise RuntimeError(f"Fiji did not write {tag} CSV; exit={proc.returncode}; see {archived_log}")
     values = {}
     with output_csv.open(newline="", encoding="utf-8-sig") as stream:
         for row in csv.DictReader(stream):
@@ -118,18 +91,16 @@ def run_fiji(tag, sources, root, executable, macro_source):
             geometry = (int(row["width"]), int(row["height"]), int(row["bit_depth"]))
             if geometry != (1024, 1024, 8):
                 raise RuntimeError(f"Fiji geometry/bit-depth mismatch: {stem}: {geometry}")
-            values[stem] = float(row["IntDen"])
+            value = float(row["IntDen"])
+            if float(row["area"]) != 1024 ** 2 or not 0 <= value <= 255 * 1024 ** 2:
+                raise RuntimeError(f"Invalid whole-image Fiji intensity: {stem}")
+            values[stem] = value
     if set(values) != set(sources):
         raise RuntimeError(f"Fiji IDs mismatch for {tag}: got {len(values)}, expected {len(sources)}")
-    root.mkdir(parents=True, exist_ok=True)
-    archived_csv = root / f"{tag}_intden.csv"
-    archived_log = root / f"{tag}_fiji.log"
     shutil.copy2(output_csv, archived_csv)
-    shutil.copy2(log, archived_log)
     if proc.returncode != 0:
-        print(json.dumps({"warning": "Fiji returned nonzero after writing its completion marker",
+        print(json.dumps({"warning": "Fiji exited nonzero after validating the completion file and CSV",
                           "fiji": tag, "exit_code": proc.returncode}), flush=True)
-    print(json.dumps({"fiji": tag, "rows": len(values), "exit_code": proc.returncode}), flush=True)
     return values, archived_csv, archived_log, proc.returncode
 
 
@@ -148,6 +119,9 @@ def main():
                         help="Reuse a complete, exact-ID prediction directory from an interrupted postprocess")
     parser.add_argument("--fiji", type=Path, default=DEFAULT_FIJI)
     parser.add_argument("--macro", type=Path, default=DEFAULT_MACRO)
+    parser.add_argument("--allow-historical-weights", action="store_true")
+    parser.add_argument("--disable-policy", action="store_true", help="Ablate the policy on the same joint-trained generator")
+    parser.add_argument("--fiji-work-root", type=Path, default=Path(__file__).resolve().parent / "fiji_ascii")
     args = parser.parse_args()
 
     cfg = read_config(args.config)
@@ -158,57 +132,48 @@ def main():
         if not path.is_file():
             raise FileNotFoundError(path)
 
-    pairs = defaultdict(dict)
-    with args.manifest.open(encoding="utf-8-sig", newline="") as stream:
-        for row in csv.DictReader(stream):
-            split = row["split"].strip()
-            if split not in {"valA", "valB"}:
-                continue
-            key = (row["source_prefix"].strip(), row["filename"].strip())
-            pairs[key][split] = row
-    test_pairs = sorted(pairs.items())
-    if len(test_pairs) != 1000 or any(set(pair) != {"valA", "valB"} for _, pair in test_pairs):
-        raise RuntimeError(f"Expected 1,000 complete official pairs, got {len(test_pairs)}")
+    test_pairs = official_pairs(args.manifest)
     expected = {Path(key[1]).stem for key, _ in test_pairs}
-    if len(expected) != len(test_pairs):
-        raise RuntimeError("Official pairs contain duplicate filename stems; prediction IDs would collide")
+    args.fiji_work_root = args.fiji_work_root.resolve()
+    if not str(args.fiji_work_root).isascii() or "," in str(args.fiji_work_root):
+        raise ValueError("Choose an ASCII Fiji work directory with no commas")
 
     args.output.mkdir(parents=True, exist_ok=True)
+    if (args.output / "comparison_metrics_summary.json").exists():
+        raise ValueError("Choose a new directory for a completed comparison run")
     pred_dir = args.output / "predictions"
     pred_dir.mkdir(exist_ok=True)
     pred = image_map(pred_dir)
     config_hash = sha256(args.config)
     weight_hash = sha256(args.weights)
     manifest_hash = sha256(args.manifest)
-    state = torch.load(args.weights, map_location="cpu", weights_only=True)
-    if isinstance(state, dict) and "model" in state:
-        checkpoint_step = state.get("step", args.checkpoint_step)
-        if state.get("stage") not in (None, "flow"):
-            raise RuntimeError(f"Expected a Flow checkpoint, got stage={state.get('stage')!r}")
-        if args.checkpoint_step is not None and checkpoint_step != args.checkpoint_step:
-            raise RuntimeError("--checkpoint-step does not match the checkpoint metadata")
-        checkpoint_config = state.get("config")
-        if checkpoint_config is not None and Config(**checkpoint_config) != cfg:
-            raise RuntimeError("Evaluation config does not match the checkpoint's embedded config")
-        model_state = state["model"]
-    else:
-        checkpoint_step = args.checkpoint_step
-        model_state = state
-    if checkpoint_step is None:
-        raise RuntimeError("Checkpoint step is unavailable; pass --checkpoint-step from its training provenance")
+    model, policy, checkpoint = checkpoint_for_evaluation(
+        args, cfg, device, load_model=not args.reuse_predictions,
+    )
+    inference = f"native 1024 RGB, FP32, {cfg.ode_steps}-step Euler, " + (
+        "deterministic policy mean" if checkpoint["policy_enabled"] else "no policy"
+    )
     prediction_meta_path = pred_dir / "prediction_provenance.json"
     expected_prediction_meta = {
         "weights_sha256": weight_hash,
         "config_sha256": config_hash,
         "manifest_sha256": manifest_hash,
-        "checkpoint_step": checkpoint_step,
+        **checkpoint,
         "base_seed": args.seed,
         "seed_policy": "sha256(base_seed, source_prefix/filename), first 63 bits",
-        "inference": f"native 1024 RGB, FP32, {cfg.ode_steps}-step Euler, no policy",
+        "inference": inference,
+        "inference_code_sha256": {
+            str(path.relative_to(Path(__file__).resolve().parents[2])): sha256(path)
+            for path in (Path(__file__).resolve(), Path(__file__).resolve().parent / "mist_evaluation.py",
+                         *sorted((Path(__file__).resolve().parents[2] / "morphoflow_ihc").glob("*.py")))
+        },
+        "runtime": {"torch": str(torch.__version__), "device": torch.cuda.get_device_name(device)},
     }
     if args.reuse_predictions:
         if set(pred) != expected:
             raise RuntimeError(f"Cannot reuse predictions: got {len(pred)}, expected {len(expected)} exact IDs")
+        if any(path.suffix != ".png" for path in pred.values()):
+            raise RuntimeError("Prediction reuse requires PNG files")
         if not prediction_meta_path.is_file():
             raise RuntimeError("Prediction provenance is missing; regenerate predictions with this evaluator")
         prediction_meta = json.loads(prediction_meta_path.read_text(encoding="utf-8"))
@@ -220,42 +185,20 @@ def main():
             raise RuntimeError("Prediction file hashes do not match provenance; regenerate predictions")
     elif pred:
         raise RuntimeError("Prediction directory is nonempty; pass --reuse-predictions with matching provenance")
-    model = None
-    marker_id = None
-    if not args.reuse_predictions:
-        model = StainFlow(cfg).to(device)
-        model.load_state_dict(model_state, strict=True)
-        model.eval()
-        marker_id = torch.tensor([cfg.marker_id("HER2")], device=device)
+    marker_id = torch.tensor([cfg.marker_id("HER2")], device=device)
     rows = []
     he_paths, ihc_paths = {}, {}
     started = time.time()
 
     for index, (key, pair) in enumerate(test_pairs, start=1):
         name = Path(key[1]).stem
-        he_path = args.data_root / "valA" / key[0] / key[1]
-        ihc_path = args.data_root / "valB" / key[0] / key[1]
-        verify_manifest_image(he_path, pair["valA"])
-        verify_manifest_image(ihc_path, pair["valB"])
-        with Image.open(he_path) as raw:
-            he_image = raw.convert("RGB")
-        with Image.open(ihc_path) as raw:
-            target = np.asarray(raw.convert("RGB"))
-        he_rgb = np.asarray(he_image)
-        if he_rgb.shape != target.shape or target.shape != (1024, 1024, 3):
-            raise RuntimeError(f"Expected paired native 1024 RGB: {name}, {he_rgb.shape}, {target.shape}")
-
+        (he_path, ihc_path), (he_rgb, target) = read_pair(args.data_root, key, pair, cfg)
         if not args.reuse_predictions:
-            he = torch.from_numpy(he_rgb.copy()).permute(2, 0, 1).float().div(127.5).sub(1)[None].to(device)
-            sample_seed = image_seed(args.seed, key)
-            noise = torch.randn(he.shape[1:], generator=torch.Generator().manual_seed(sample_seed))[None].to(device)
-            with torch.inference_mode(), precision(device, "fp32"):
-                generated = sample_rgb(model, he, marker_id, noise, policy=None)
-            generated_rgb = np.rint((generated.float().cpu()[0].permute(1, 2, 0).clamp(-1, 1).numpy() + 1) * 127.5).astype(np.uint8)
+            generated_rgb = predict_rgb(model, policy, he_rgb, marker_id, image_seed(args.seed, key))
             if generated_rgb.shape != target.shape:
                 raise RuntimeError(f"Native output shape mismatch: {name}: {generated_rgb.shape}")
             pred_path = pred_dir / f"{name}.png"
-            Image.fromarray(generated_rgb, mode="RGB").save(pred_path)
+            atomic_write(pred_path, lambda stream: Image.fromarray(generated_rgb).save(stream, format="PNG"))
             pred[name] = pred_path
         with Image.open(pred[name]) as raw:
             generated_rgb = np.asarray(raw.convert("RGB"))
@@ -290,9 +233,8 @@ def main():
             **expected_prediction_meta,
             "prediction_sha256": {name: sha256(pred[name]) for name in sorted(expected)},
         }
-        temporary_meta = prediction_meta_path.with_suffix(".json.tmp")
-        temporary_meta.write_text(json.dumps(prediction_meta, indent=2) + "\n", encoding="utf-8")
-        temporary_meta.replace(prediction_meta_path)
+        atomic_write(prediction_meta_path,
+                     lambda stream: stream.write((json.dumps(prediction_meta, indent=2) + "\n").encode("utf-8")))
 
     fid_reference_dir = args.output / "fid_reference_valB"
     stage_images(real, fid_reference_dir)
@@ -300,13 +242,13 @@ def main():
     if set(fid_real) != expected:
         raise RuntimeError(f"FID reference staging mismatch: {len(fid_real)} / {len(expected)}")
 
-    fid_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    fid_device = str(device)
     print(json.dumps({"stage": "FID", "device": fid_device}), flush=True)
     fid = float(calculate_fid_given_paths([str(pred_dir), str(fid_reference_dir)],
                                           batch_size=4, device=fid_device, dims=2048, num_workers=0))
     print(json.dumps({"stage": "Fiji", "count_each": 1000}), flush=True)
-    real_intden, real_csv, real_log, real_rc = run_fiji("real_valB", real, args.output, args.fiji, args.macro)
-    pred_intden, pred_csv, pred_log, pred_rc = run_fiji("generated_valB", pred, args.output, args.fiji, args.macro)
+    real_intden, real_csv, real_log, real_rc = run_fiji("real_valB", real, args.output, args.fiji, args.macro, args.fiji_work_root)
+    pred_intden, pred_csv, pred_log, pred_rc = run_fiji("generated_valB", pred, args.output, args.fiji, args.macro, args.fiji_work_root)
     names = sorted(expected)
     rc = float(np.mean([r["R_c_gray_Pearson"] for r in rows]))
     rp = float(np.corrcoef([real_intden[n] for n in names], [pred_intden[n] for n in names])[0, 1])
@@ -334,14 +276,14 @@ def main():
         "dataset": "MIST HER2",
         "split": "Official TrainValAB/valA+valB evaluation cohort",
         "image_count": len(rows),
-        "checkpoint_stage": "flow",
-        "checkpoint_step": checkpoint_step,
+        **checkpoint,
         "weights_sha256": weight_hash,
         "config_sha256": config_hash,
         "manifest_sha256": manifest_hash,
         "prediction_ids_match": True,
         "native_geometry": "1024x1024 RGB; no resize/crop/flip at inference",
-        "inference": f"FP32, {cfg.ode_steps}-step Euler, deterministic pair-specific noise, no PPO policy",
+        "inference": inference,
+        "prediction_provenance_sha256": sha256(prediction_meta_path),
         "noise_seed_policy": "sha256(base_seed, source_prefix/filename), first 63 bits; recorded per image",
         "metrics": metrics,
         "fiji": {
@@ -349,8 +291,10 @@ def main():
             "per_image_intden_columns": ["real_IHC_Fiji_IntDen", "generated_IHC_Fiji_IntDen"],
             "real_rows": len(real_intden), "generated_rows": len(pred_intden),
             "real_exit_code": real_rc, "generated_exit_code": pred_rc,
+            "macro_sha256": sha256(args.macro),
+            "launcher_sha256": sha256(args.fiji),
             "completion_marker_verified": True,
-            "exit_code_note": "Each Fiji run must print its expected DONE count and pass exact-ID, 1024x1024, 8-bit CSV validation; nonzero launcher exit is recorded as a warning.",
+            "exit_code_note": "Each Fiji run must write its expected DONE count file and pass exact-ID, 1024x1024, 8-bit CSV validation; nonzero launcher exit is recorded as a warning.",
         },
         "aggregation": {
             "PSNR_SSIM": "mean of per-image RGB metrics, uint8 data_range=255",
@@ -363,7 +307,7 @@ def main():
         "elapsed_seconds": round(time.time() - started, 1),
     }
     out = args.output / "comparison_metrics_summary.json"
-    out.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    atomic_write(out, lambda stream: stream.write((json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")))
     print(json.dumps({"status": "COMPLETE", "image_count": len(rows), "metrics": metrics,
                       "summary": str(out), "elapsed_seconds": summary["elapsed_seconds"]},
                      ensure_ascii=False), flush=True)

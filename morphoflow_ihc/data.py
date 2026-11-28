@@ -1,6 +1,7 @@
 """Cache paired RGB training images and sample shared-coordinate crops."""
 
 import csv
+import hashlib
 import json
 from pathlib import Path
 from tempfile import NamedTemporaryFile, mkdtemp
@@ -12,6 +13,26 @@ from torch.utils.data import Dataset
 
 from .config import Config
 from .stains import canonical_size
+
+
+def sha256(path):
+    with path.open("rb") as stream:
+        digest = hashlib.sha256()
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def verify_manifest_image(path, row):
+    expected_hash = row.get("sha256", "").strip().lower()
+    if len(expected_hash) != 64 or any(c not in "0123456789abcdef" for c in expected_hash):
+        raise ValueError(f"Missing or invalid manifest SHA-256 for {path}")
+    try:
+        expected_size = int(row.get("bytes"))
+    except (ValueError, TypeError) as error:
+        raise ValueError(f"Missing or invalid manifest byte count for {path}") from error
+    if path.stat().st_size != expected_size or sha256(path) != expected_hash:
+        raise ValueError(f"Image does not match manifest bytes/SHA-256: {path}")
 
 
 def atomic_write(path: Path, writer):
@@ -58,7 +79,10 @@ def _manifest_rows(manifest: Path, cfg: Config):
             source_split = row["split"].strip()
             if source_split not in valid_splits:
                 raise ValueError(f"Unsupported MIST source split: {source_split}")
-            pair_id = f"{row['source_prefix'].strip()}/{row['filename'].strip()}"
+            group, name = (row[field].strip() for field in ("source_prefix", "filename"))
+            if any(not part or part in {".", ".."} or any(c in part for c in "/\\:,") for part in (group, name)):
+                raise ValueError(f"Invalid MIST manifest path: {group}/{name}")
+            pair_id = f"{group}/{name}"
             pair_cohorts.setdefault(pair_id, set()).add(source_split)
         for pair_id, cohorts in pair_cohorts.items():
             if cohorts not in ({"trainA", "trainB"}, {"valA", "valB"}):
@@ -81,6 +105,8 @@ def _manifest_rows(manifest: Path, cfg: Config):
                 "split": "test" if is_official_test else "train",
                 "pair_id": pair_id,
                 "source_cohort": "official_test" if is_official_test else "official_train",
+                "bytes": row.get("bytes"),
+                "sha256": row.get("sha256") or "",
                 "mpp": row.get("mpp") or cfg.pixel_size_um,
             })
         return normalized
@@ -118,7 +144,7 @@ def prepare(manifest: Path, output: Path, cfg: Config) -> int:
         if entry["source_cohort"] != source_cohort:
             raise ValueError(f"Pair {pair_id!r} crosses source cohorts")
         mpp = float(row.get("mpp") or cfg.pixel_size_um)
-        entry["modalities"][domain] = (source, mpp)
+        entry["modalities"][domain] = (source, mpp, row)
         if domain == "IHC":
             marker = row["marker"].strip().upper()
             cfg.marker_id(marker)
@@ -149,7 +175,9 @@ def prepare(manifest: Path, output: Path, cfg: Config) -> int:
         paths = {}
         sizes = {}
         for domain in ("HE", "IHC"):
-            source, mpp = entry["modalities"][domain]
+            source, mpp, row = entry["modalities"][domain]
+            if entry["source_cohort"] == "official_train":
+                verify_manifest_image(source, row)
             with Image.open(source) as raw:
                 rgb = raw.convert("RGB")
                 size = canonical_size(rgb.size, mpp, cfg)
@@ -175,7 +203,7 @@ def prepare(manifest: Path, output: Path, cfg: Config) -> int:
             continue
         counts = source_cohort_split_counts.setdefault(cohort, {split: 0 for split in ("train", "val", "test")})
         counts[entry["split"]] += 1
-    cache = {"format": 4, "settings": cache_settings(cfg), "entries": entries,
+    cache = {"format": 4, "settings": cache_settings(cfg), "entries": entries, "manifest_sha256": sha256(manifest),
              "split_assignments": dict(sorted(groups.items())), "split_counts": split_counts}
     if source_cohort_split_counts:
         cache["source_cohort_split_counts"] = source_cohort_split_counts
@@ -187,7 +215,9 @@ class IHCCrops(Dataset):
     def __init__(self, path: Path, cfg: Config):
         self.root = path
         self.cfg = cfg
-        index = json.loads((path / "index.json").read_text(encoding="utf-8"))
+        payload = (path / "index.json").read_bytes()
+        self.fingerprint = hashlib.sha256(payload).hexdigest()
+        index = json.loads(payload)
         if index["settings"] != cache_settings(cfg):
             raise ValueError("Cache stain vectors, markers or pixel spacing differ from this configuration")
         if index.get("format") != 4:
@@ -195,17 +225,27 @@ class IHCCrops(Dataset):
         self.entries = index["entries"]
         if not self.entries:
             raise ValueError("Empty training cache")
+        if any(entry.get("split") != "train" for entry in self.entries):
+            raise ValueError("Training cache contains non-training entries")
+        if len({entry["pair_id"] for entry in self.entries}) != len(self.entries):
+            raise ValueError("Training cache contains duplicate pair IDs")
+        if index.get("source_cohort_split_counts") and not index.get("manifest_sha256"):
+            raise ValueError("Rebuild the official cache to verify training source hashes")
 
     def __len__(self):
         return len(self.entries)
 
     def __getitem__(self, index):
+        generator = None
+        if isinstance(index, tuple):
+            index, seed = index
+            generator = torch.Generator().manual_seed(seed)
         item = self.entries[index]
         marker, size = item["marker"], self.cfg.crop
-        ihc, he = self.paired_crop(item["ihc_file"], item["he_file"], size)
+        ihc, he = self.paired_crop(item["ihc_file"], item["he_file"], size, generator)
         return self.cfg.marker_id(marker), ihc, he
 
-    def paired_crop(self, ihc_file, he_file, size):
+    def paired_crop(self, ihc_file, he_file, size, generator=None):
         with np.load(self.root / ihc_file, allow_pickle=False) as source:
             ihc = source["rgb"]
         with np.load(self.root / he_file, allow_pickle=False) as source:
@@ -213,8 +253,8 @@ class IHCCrops(Dataset):
         if ihc.shape != he.shape:
             raise ValueError("Cached paired H&E/IHC images differ in shape")
         height, width = ihc.shape[:2]
-        y = int(torch.randint(max(1, height - size + 1), (1,)).item())
-        x = int(torch.randint(max(1, width - size + 1), (1,)).item())
+        y = int(torch.randint(max(1, height - size + 1), (1,), generator=generator).item())
+        x = int(torch.randint(max(1, width - size + 1), (1,), generator=generator).item())
         def tensor_crop(rgb):
             patch = rgb[y:y + size, x:x + size]
             padding = ((0, size - patch.shape[0]), (0, size - patch.shape[1]), (0, 0))

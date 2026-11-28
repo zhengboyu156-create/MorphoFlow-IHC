@@ -8,6 +8,7 @@ from torch.distributions import Independent, Normal
 import torch.nn.functional as F
 from torchdiffeq import odeint
 
+from .morphology import morphology_channels, morphology_weights
 
 
 def regional_average(values, window):
@@ -84,25 +85,47 @@ def corrected_velocity(model, base, action):
     return base + residual
 
 
+def policy_state(model, policy, h, marker, noise, times):
+    k = model.cfg.action_step
+    state = integrate(model, h, marker, noise, times[:k + 1])
+    base = model.velocity(times[k], state, h, marker)
+    structure = morphology_channels(h, model.cfg, "HE")
+    target = tuple((side + 3) // 4 for side in structure.shape[-2:])
+    observation = policy.observation(h, state, base, morphology_weights(structure, target))
+    return state, base, observation
+
+
+def finish_action(model, h, marker, times, state, base, action):
+    k = model.cfg.action_step
+    initial = state + (times[k + 1] - times[k]) * corrected_velocity(model, base, action)
+    return integrate(model, h, marker, initial, times[k + 1:]).clamp(-1, 1)
+
+
 def sample_rgb(model, h, marker, noise, policy=None):
     times = grid(model, noise)
     if policy is None:
         return integrate(model, h, marker, noise, times).clamp(-1, 1)
-    k = model.cfg.action_step
-    state = integrate(model, h, marker, noise, times[:k + 1])
-    base = model.velocity(times[k], state, h, marker)
-    observation = policy.observation(h, state, base, model.morphology(h, "HE")[1])
-    action = policy(observation)
-    initial = state + (times[k + 1] - times[k]) * corrected_velocity(model, base, action)
-    result = integrate(model, h, marker, initial, times[k + 1:])
-    return result.clamp(-1, 1)
+    state, base, observation = policy_state(model, policy, h, marker, noise, times)
+    return finish_action(model, h, marker, times, state, base, policy(observation))
 
 
 def action_distribution(mean, std):
     return Independent(Normal(mean.float(), std), reinterpreted_batch_ndims=3)
 
 
-def paired_expression_reward(model, generated, reference, marker):
+def reward_reference(reference, cfg, marker):
+    target = rgb_to_dab(reference, cfg).detach()
+    window = cfg.reward_region
+    thresholds = target.new_tensor(list(cfg.markers.values()))[marker].view(-1, 1, 1, 1)
+    valid = regional_average(torch.ones_like(target[:1]), window)
+    def pool(values):
+        return [total / area for total, area in zip(regional_average(values, window), valid)]
+
+    return (thresholds, pool, valid, pool(torch.sigmoid((target - thresholds) / 0.05)), pool(target),
+            [fraction > 0.01 for fraction in pool((target > thresholds).float())])
+
+
+def paired_expression_reward(model, generated, reference, marker, *, prepared=None):
     """Differentiable regional DAB support/amount reward from paired IHC.
 
     Coarse regional pooling reduces sensitivity to local serial-section shifts;
@@ -110,33 +133,29 @@ def paired_expression_reward(model, generated, reference, marker):
     """
     cfg = model.cfg
     estimated = rgb_to_dab(generated, cfg)
-    target = rgb_to_dab(reference, cfg).detach()
-    window = cfg.reward_region
-    thresholds = generated.new_tensor(list(cfg.markers.values()))[marker].view(-1, 1, 1, 1)
-    predicted_support = torch.sigmoid((estimated - thresholds) / 0.05)
-    target_support = (target > thresholds).float()
-    predicted_fractions = regional_average(predicted_support, window)
-    target_fractions = regional_average(target_support, window)
+    if prepared is None:
+        prepared = reward_reference(reference, cfg, marker)
+    thresholds, pool, valid, target_fractions, target_amounts, active_windows = prepared
+    predicted_fractions = pool(torch.sigmoid((estimated - thresholds) / 0.05))
     # Include empty/background windows so extra DAB outside tissue is penalized.
-    predicted_amounts = regional_average(estimated, window)
-    target_amounts = regional_average(target, window)
+    predicted_amounts = pool(estimated)
 
-    def balanced_error(error, active):
-        positive = (error * active).flatten(1).sum(1) / active.flatten(1).sum(1).clamp_min(1)
-        negative_mask = ~active
-        negative = (error * negative_mask).flatten(1).sum(1) / negative_mask.flatten(1).sum(1).clamp_min(1)
+    def balanced_error(error, active, area):
+        positive_area = area * active
+        negative_area = area * ~active
+        positive = (error * positive_area).flatten(1).sum(1) / positive_area.flatten(1).sum(1).clamp_min(1e-8)
+        negative = (error * negative_area).flatten(1).sum(1) / negative_area.flatten(1).sum(1).clamp_min(1e-8)
         has_positive = active.flatten(1).any(1)
-        has_negative = negative_mask.flatten(1).any(1)
+        has_negative = (~active).flatten(1).any(1)
         return torch.where(has_positive & has_negative, 0.5 * (positive + negative),
                            torch.where(has_positive, positive, negative))
 
     scores = []
-    for predicted_fraction, target_fraction, predicted_amount, target_amount in zip(
-        predicted_fractions, target_fractions, predicted_amounts, target_amounts
+    for predicted_fraction, target_fraction, predicted_amount, target_amount, active, area in zip(
+        predicted_fractions, target_fractions, predicted_amounts, target_amounts, active_windows, valid
     ):
-        active = target_fraction > 0.01
-        support_error = balanced_error((predicted_fraction - target_fraction).abs(), active)
-        amount_error = balanced_error((predicted_amount - target_amount).abs(), active)
+        support_error = balanced_error((predicted_fraction - target_fraction).abs(), active, area)
+        amount_error = balanced_error((predicted_amount - target_amount).abs(), active, area)
         amount_score = torch.exp(-amount_error / thresholds.flatten(1)[:, 0].clamp_min(1e-6))
         support_score = (1 - support_error).clamp(0, 1)
         weight = cfg.intensity_weight
@@ -148,20 +167,16 @@ def collect(model, policy, he, reference, marker, *, direct=False):
     cfg = model.cfg
     noise = torch.randn_like(he)
     times = grid(model, noise)
-    k = cfg.action_step
-    state = integrate(model, he, marker, noise, times[:k + 1])
-    base = model.velocity(times[k], state, he, marker)
-    observation = policy.observation(he, state, base, model.morphology(he, "HE")[1])
+    state, base, observation = policy_state(model, policy, he, marker, noise, times)
     mean = policy(observation)
     dist = action_distribution(mean, cfg.action_std)
     actions = dist.rsample((cfg.trajectory_candidates,)) if direct else dist.sample((cfg.trajectory_candidates,))
     log_prob = dist.log_prob(actions)
-    dt = times[k + 1] - times[k]
+    prepared = reward_reference(reference, cfg, marker)
     rewards = []
     for action in actions:
-        initial = state + dt * corrected_velocity(model, base, action)
-        rgb = integrate(model, he, marker, initial, times[k + 1:]).clamp(-1, 1)
-        rewards.append(paired_expression_reward(model, rgb, reference, marker))
+        rgb = finish_action(model, he, marker, times, state, base, action)
+        rewards.append(paired_expression_reward(model, rgb, reference, marker, prepared=prepared))
     return observation, mean, actions, log_prob, torch.stack(rewards)
 
 
@@ -186,20 +201,18 @@ def reward_group_stats(rewards, cfg):
         "spread": spread.mean().item(),
         "spread_median": spread.median().item(),
         "signal_fraction": informative.float().mean().item(),
-        "candidate0_win_rate": wins.mean().item(),
+        "candidate0_win_rate": wins[0].mean().item(),
     }
 
 
 def direct_policy_update(policy, optimizer, experience, cfg, scaler=None):
     observation, old_mean, _, _, rewards = experience
-    informative, stats = reward_group_stats(rewards, cfg)
+    _, stats = reward_group_stats(rewards, cfg)
     stats.update({"accepted": 0, "policy_loss": 0.0, "kl": 0.0})
-    if not informative.any():
-        return stats
     snapshot = deepcopy(policy.state_dict()), deepcopy(optimizer.state_dict())
+    scale_before = scaler.get_scale() if scaler is not None else None
     optimizer.zero_grad(set_to_none=True)
-    mask = informative.to(rewards.dtype).unsqueeze(0)
-    loss = -(rewards * mask).sum() / mask.expand_as(rewards).sum().clamp_min(1)
+    loss = -rewards.mean()
     if not torch.isfinite(loss):
         raise FloatingPointError("Nonfinite direct policy loss")
     (scaler.scale(loss) if scaler is not None else loss).backward()
@@ -212,11 +225,13 @@ def direct_policy_update(policy, optimizer, experience, cfg, scaler=None):
     else:
         optimizer.step()
     kl = action_kl(policy, observation, old_mean.detach(), cfg)
-    accepted = bool(torch.isfinite(kl) and kl <= cfg.kl_limit)
+    overflow = scaler is not None and scaler.get_scale() < scale_before
+    accepted = bool(not overflow and torch.isfinite(kl) and kl <= cfg.kl_limit)
     if not accepted:
         policy.load_state_dict(snapshot[0])
         optimizer.load_state_dict(snapshot[1])
-    stats.update({"accepted": int(accepted), "policy_loss": loss.item(), "kl": kl.item()})
+    stats.update({"accepted": int(accepted), "policy_loss": loss.item(), "kl": kl.item(),
+                  "policy_amp_overflow": int(overflow)})
     return stats
 
 
@@ -262,14 +277,21 @@ def policy_update(policy, optimizer, experience, cfg, passes=2):
 
 
 def rgb_to_dab(image, cfg):
+    with torch.autocast(image.device.type, enabled=False):
+        return _rgb_to_dab_fp32(image, cfg)
+
+
+def _rgb_to_dab_fp32(image, cfg):
     rgb = ((image.float()+1)/2).clamp(0, 1)
     od = -torch.log((rgb * 255 + 1) / 256)
     h = F.normalize(od.new_tensor(cfg.stain_h), dim=0)
     d = F.normalize(od.new_tensor(cfg.stain_d), dim=0)
     vectors = torch.stack((h, d), dim=1)
-    concentrations = torch.einsum("ij,bjhw->bihw", torch.linalg.pinv(vectors), od)
+    projections = torch.einsum("ji,bjhw->bihw", vectors, od)
+    cosine = torch.dot(h, d)
+    concentrations = (projections - cosine * projections.flip(1)) / (1 - cosine.square())
     boundary = (concentrations < 0).any(1, keepdim=True)
-    candidates = torch.einsum("ji,bjhw->bihw", vectors, od).clamp_min(0)
+    candidates = projections.clamp_min(0)
     edge = candidates.argmax(1, keepdim=True)
     edge_dab = torch.where(edge == 1, candidates[:, 1:2], 0.0)
     return torch.where(boundary, edge_dab, concentrations[:, 1:2])

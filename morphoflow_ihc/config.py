@@ -70,8 +70,8 @@ class Config:
         if (self.flow_region < self.region or self.flow_region > self.crop
                 or self.crop % self.flow_region or self.flow_region % self.region):
             raise ValueError("flow_region must be a region-aligned divisor of crop, at least region")
-        if self.crop % (2 ** (len(self.channel_mult) - 1)):
-            raise ValueError("crop is incompatible with U-Net downsampling")
+        if self.crop < 24 or self.crop % (2 ** (len(self.channel_mult) - 1)):
+            raise ValueError("crop is too small for PatchGAN or incompatible with U-Net downsampling")
         if self.context <= self.region or self.context % self.region:
             raise ValueError("context must span multiple region cells")
         if not 0 <= self.overlap < self.crop:
@@ -105,6 +105,10 @@ class Config:
             if len(vector) != 3 or any(not math.isfinite(v) or v < 0 for v in vector) or not sum(vector):
                 raise ValueError(f"Invalid optical-density vector: {name}")
             setattr(self, name, vector)
+        for vector in (self.stain_e, self.stain_d):
+            cosine = sum(h * v for h, v in zip(self.stain_h, vector)) / (math.hypot(*self.stain_h) * math.hypot(*vector))
+            if 1 - cosine ** 2 <= 1e-5:
+                raise ValueError("Stain vectors are nearly collinear")
 
     def marker_id(self, name: str) -> int:
         key = name.upper()

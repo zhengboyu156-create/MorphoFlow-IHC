@@ -50,10 +50,12 @@ python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/
 python -m pip install numpy Pillow scipy POT pytest
 python -m pip install --no-deps -e third_party/torchcfm -e third_party/torchdiffeq -e .
 python -m morphoflow_ihc prepare --manifest datasets/MIST_HER2/manifest.csv --config configs/mist_her2.json --output data/cache_rgb
-python -m morphoflow_ihc train --cache data/cache_rgb --config configs/mist_her2.json --output runs/rgb_flow.pt --device cuda
-python -m morphoflow_ihc train-rl --cache data/cache_rgb --checkpoint runs/rgb_flow.pt --output runs/rgb_rl.pt --device cuda
+python -m morphoflow_ihc train --cache data/cache_rgb --config configs/mist_her2.json --output runs/rgb_flow.pt --device cuda --epochs 40 --no-time-limit
+python -m morphoflow_ihc train-rl --cache data/cache_rgb --checkpoint runs/rgb_flow.pt --output runs/rgb_rl.pt --device cuda --epochs 10 --no-time-limit
 python -m morphoflow_ihc infer --checkpoint runs/rgb_flow.pt --image data/he.png --marker HER2 --output prediction.png --maps prediction.npz
 python -m pytest -q
 ```
 
-The command writes paired RGB training caches (format 4); older unpaired caches are rejected. Caches store full canonical images, so changing the crop from 256 to 512 does not require rebuilding a cache if its marker, stain vectors, pixel spacing, and source images are unchanged. The current generator uses three terms: regional CFM, PatchNCE, and adversarial loss. Checkpoint format 9 records the regional flow objective and IHC-only PatchGAN; checkpoints from earlier objectives are rejected. Start joint policy training from a base flow checkpoint to initialize the policy and optimizer state.
+The cache stores full canonical RGB images. For the official MIST run, rebuild earlier caches with `prepare` to verify the training image bytes against the manifest. Start Flow from scratch with a fresh output path. Format 10 records the corrected training objective and binds resumes to the cache index, batch size, seed, and effective precision. The joint checkpoint also records its LR decay horizon. Format 9 remains available for historical inference.
+
+The [design audit](docs/experiments/FLOW_DESIGN_AUDIT_20261128.md) records the verified changes and evaluation commands for the base Flow, joint checkpoint, and same-generator policy ablation.

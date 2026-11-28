@@ -193,8 +193,16 @@ def test_cli_pipeline(tmp_path):
     assert paired_ihc.shape == paired_he.shape == (3, 32, 32)
     base = ["train", "--cache", cache, "--config", cfg_path, "--output", flow,
             "--device", "cpu", "--no-time-limit"]
-    main(base + ["--steps", "1", "--batch", "2"])
+    main(base + ["--steps", "1"])
+    with pytest.raises(SystemExit, match="2"):
+        main(base + ["--steps", "2", "--resume", flow, "--batch", "2"])
     main(base + ["--steps", "2", "--resume", flow])
+    continuous_path = tmp_path / "continuous.pt"
+    main(["train", "--cache", cache, "--config", cfg_path, "--output", str(continuous_path),
+          "--device", "cpu", "--no-time-limit", "--steps", "2"])
+    resumed_model = torch.load(flow, weights_only=True)["model"]
+    continuous_model = torch.load(continuous_path, weights_only=True)["model"]
+    assert all(torch.equal(tensor, continuous_model[name]) for name, tensor in resumed_model.items())
     main(["train-rl", "--cache", cache, "--checkpoint", flow, "--output", rl, "--groups", "2",
           "--policy-lr", "0.0001", "--device", "cpu", "--no-time-limit"])
     joint = torch.load(rl, weights_only=True)
@@ -264,8 +272,12 @@ def test_patchnce_reaches_rgb_generator_and_old_checkpoints_rejected(tmp_path):
     legacy_config = asdict(cfg) | {'advantage_scale': 0.01}
     torch.save({'format': 8, 'stage': 'flow', 'config': legacy_config,
                 'model': model.state_dict()}, legacy)
-    with pytest.raises(ValueError, match='format 9'):
+    with pytest.raises(ValueError, match='format 10'):
         open_checkpoint(legacy, torch.device('cpu'))
+    torch.save({"format": 9, "stage": "flow", "config": asdict(cfg), "model": model.state_dict()}, legacy)
+    with pytest.raises(ValueError, match="format 10"):
+        open_checkpoint(legacy, torch.device("cpu"))
+    open_checkpoint(legacy, torch.device("cpu"), allow_legacy=True)
 
 
 def test_rgb_dab_diagnostic_matches_numpy_decomposition():
@@ -323,7 +335,7 @@ def test_flow_target_uses_its_paired_he_condition():
     rgb = torch.rand(2, 3, 32, 32) * 2 - 1
     he = torch.rand_like(rgb) * 2 - 1
     model.losses(rgb, he, torch.zeros(2, dtype=torch.long))
-    assert len(observed) == 1
+    assert len(observed) == 1 + cfg.ode_steps
     for condition in observed:
         torch.testing.assert_close(condition, he)
 
@@ -362,6 +374,24 @@ def test_paired_reward_prefers_reference_and_stays_bounded():
     assert torch.isfinite(good).all() and ((good >= 0) & (good <= 1)).all()
     assert torch.isfinite(other).all() and ((other >= 0) & (other <= 1)).all()
     assert torch.all(good > other)
+    torch.testing.assert_close(good, torch.ones_like(good))
+
+
+def test_candidate_zero_win_rate_is_measured_not_constant():
+    from morphoflow_ihc.trajectory import reward_group_stats
+    rewards = torch.tensor([[0.9, 0.8], [0.5, 0.8], [0.1, 0.0], [0.2, 0.1]])
+    _, stats = reward_group_stats(rewards, Config())
+    assert stats["candidate0_win_rate"] == pytest.approx(0.75)
+
+
+def test_epoch_order_resumes_at_exact_pair_and_crop_seed():
+    from morphoflow_ihc.engine import EpochOrder
+    continuous = EpochOrder(7, 1234, 0)
+    first = list(continuous)
+    second = list(continuous)
+    resumed = EpochOrder(7, 1234, 4)
+    assert list(resumed) == first[4:]
+    assert list(resumed) == second
 
 
 def test_policy_action_can_modify_rgb_channels_independently():
