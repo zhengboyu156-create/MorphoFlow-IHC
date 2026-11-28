@@ -1,0 +1,57 @@
+{
+  "markers": {
+    "HER2": 0.35
+  },
+  "pixel_size_um": 0.4661,
+  "crop": 512,
+  "region": 32,
+  "reward_region": 128,
+  "flow_region": 64,
+  "flow_objective": "regional",
+  "context": 128,
+  "overlap": 64,
+  "channels": 32,
+  "channel_mult": [
+    1,
+    2,
+    2,
+    4
+  ],
+  "residual_blocks": 1,
+  "ode_steps": 4,
+  "action_step": 2,
+  "nce_weight": 0.1,
+  "morphology_width": 32,
+  "morphology_channels": 64,
+  "patch_projection_dim": 128,
+  "nce_patches": 64,
+  "nce_temperature": 0.07,
+  "adversarial_weight": 0.1,
+  "critic_lr": 0.0002,
+  "tissue_od": 0.1,
+  "stain_h": [
+    0.65,
+    0.704,
+    0.286
+  ],
+  "stain_e": [
+    0.072,
+    0.99,
+    0.105
+  ],
+  "stain_d": [
+    0.268,
+    0.57,
+    0.776
+  ],
+  "intensity_weight": 0.2,
+  "action_std": 0.2,
+  "velocity_limit": 1,
+  "velocity_rms_floor": 0.05,
+  "min_reward_spread": 0.00001,
+  "trajectory_candidates": 4,
+  "ppo_clip": 0.15,
+  "kl_limit": 0.02,
+  "flow_lr": 0.0002,
+  "rl_lr": 0.00001
+}
