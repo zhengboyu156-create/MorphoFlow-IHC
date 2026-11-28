@@ -1,0 +1,29 @@
+{
+  "checkpoint_stage": "flow",
+  "checkpoint_step": 185680,
+  "weights_sha256": "255de60aa986aa49903c18db9a8494d651bc3b0c9b29132829d73a99f854c109",
+  "config_sha256": "f0fd285fcb84e85737a6e008815f78c269eb3a456579978f6a315597f3d94cf0",
+  "manifest_sha256": "bd667a845ddf15071815c6f31a042d190abc353ecf2c14f5cfc5f6d8c6695571",
+  "test_split": "official MIST HER2 valA/valB (1,000 pairs)",
+  "test_pair_count": 1000,
+  "seed_per_image": 1234,
+  "inference": "native-size full-image, 4-step Euler, FP32, no PPO policy",
+  "metrics": {
+    "region_support_fraction_mae_32px": {
+      "mean": 0.35531539422273634,
+      "median": 0.3527110666036606,
+      "std": 0.04713286107391788
+    },
+    "reward_region_support_fraction_mae_128px": {
+      "mean": 0.2912757919207215,
+      "median": 0.29399609565734863,
+      "std": 0.07136672417319377
+    },
+    "reference_tissue_fraction": {
+      "mean": 0.8929948949813843,
+      "median": 0.9823684692382812,
+      "std": 0.1613337055654549
+    }
+  },
+  "elapsed_seconds": 534.3
+}
