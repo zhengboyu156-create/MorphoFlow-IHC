@@ -30,6 +30,6 @@
   "source_images_root": "D:\\2222\\datasets\\MIST_HER2",
   "training_cache_root": "D:\\2222\\formal_mist_her2_ppo1_seed1234\\cache",
   "all_image_weight_cache_assets_moved_to_D2222": true,
-  "current_flow_step": 11000,
+  "current_flow_step": 11500,
   "current_flow_checkpoint_sha256": "7433d897a5a5dc24c3d0602204348d16ec94f602493dfd5983a1da66f14025a0"
 }
