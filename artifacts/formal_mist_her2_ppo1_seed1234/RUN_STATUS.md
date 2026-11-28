@@ -5,7 +5,7 @@
 - Cache verification: 4,642 official_train pairs; the index contains no test image entries. The separate 1,000-pair official_test cohort remains excluded from training.
 - Flow target: 40 epochs / 185,680 updates. PPO target: 10 epochs / 46,420 groups, automatically scheduled only after a successful Flow completion.
 - Effective precision: BF16 (torch.bfloat16), seed 1234, batch 1, crop 512, velocity limit 1.0, min reward spread 1e-5.
-- At this update Flow has resumed from step 2,000 and reached step 2,500/185,680. The latest saved checkpoint SHA-256 is ab37d3a19bc4dd40d8ad90e2facce6bab3caa3e538095205b0af887e947488dc.
+- At this update Flow has resumed from step 2,000 and reached step 3,000/185,680. The latest saved checkpoint SHA-256 is 2fa8349ce8c19cdc1dd7a7532d3d963d9c583d7580314fbb0661dd3d983dd27b.
 - An early throughput estimate projected about 19 hours remaining for Flow plus 5-6 hours for PPO; this is provisional and will be revised from later checkpoints.
 - Checkpoints, source data and generated cache are kept on local D: storage and are not included in Git. The official test set has not been evaluated.
 - C: initially ran out of space during an incomplete cache build. The incomplete cache has no index, was moved under D:\2222\data, and is not used.
@@ -13,5 +13,5 @@
 
 ## Storage relocation and resume
 
-All source images, image caches and pilot/formal weights are physically under D:\2222. The C: workspace paths datasets, data and runs are junctions to D:\2222 so repository commands keep working. Flow was paused at a saved step-2,000 checkpoint, its optimizer state was confirmed, then resumed from that checkpoint using the same cache index and locked settings. It has since resumed and reached step 2,500 with a fresh checkpoint; no test images were included in the cache.
+All source images, image caches and pilot/formal weights are physically under D:\2222. The C: workspace paths datasets, data and runs are junctions to D:\2222 so repository commands keep working. Flow was paused at a saved step-2,000 checkpoint, its optimizer state was confirmed, then resumed from that checkpoint using the same cache index and locked settings. It has since resumed and reached step 3,000 with a fresh checkpoint; no test images were included in the cache.
 

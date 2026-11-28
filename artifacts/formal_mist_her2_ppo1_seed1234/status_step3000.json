@@ -1,0 +1,14 @@
+{
+  "flow_pid": 99092,
+  "updated": "2026-11-28T22:02:44.5357137+08:00",
+  "target": 185680,
+  "status": "flow_running",
+  "storage_root": "D:\\2222",
+  "current_step": 3000,
+  "checkpoint_sha256": "2fa8349ce8c19cdc1dd7a7532d3d963d9c583d7580314fbb0661dd3d983dd27b",
+  "latest_loss": {
+    "flow": 0.01613442599773407,
+    "adversarial": 0.08499691635370255,
+    "nce": 1.7630866765975952
+  }
+}
