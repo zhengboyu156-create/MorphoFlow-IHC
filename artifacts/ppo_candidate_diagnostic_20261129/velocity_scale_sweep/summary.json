@@ -1,0 +1,239 @@
+{
+  "no_weight_updates": true,
+  "checkpoint_sha256": "f348297524c5e67db76e11659ad46799910e17c7cac5fef1f7fc2aba7d121c69",
+  "checkpoint_step": 1000,
+  "pilot_dev_split_sha256": "478832c368d1cc8658a5a37e4f60877e49fa18d72ab424066b8039a03ff57591",
+  "pilot_dev_cache_index_sha256": "d9e63951a6ea2f595aeacc394567d237210cc76b474d317a49b2d37e9908cc73",
+  "state_count": 32,
+  "source_prefix_count": 32,
+  "candidate_count": 4,
+  "velocity_limits": [
+    0.1,
+    0.25,
+    0.5,
+    1.0
+  ],
+  "reward_gate_unchanged": 1e-05,
+  "action_std": 0.2,
+  "results": {
+    "0.1": {
+      "policy_mean_rms": {
+        "mean": 0.13445644546300173,
+        "median": 0.1348303183913231
+      },
+      "sampled_action_rms": {
+        "mean": 0.2412825853098184,
+        "median": 0.2415652722120285
+      },
+      "velocity_correction_rms": {
+        "mean": 0.02221881326113362,
+        "median": 0.02222262602299452
+      },
+      "correction_to_base_rms": {
+        "mean": 0.018192853458458558,
+        "median": 0.01825416460633278
+      },
+      "output_delta_mae_rgb01": {
+        "mean": 0.001125272339777439,
+        "median": 0.0011298828176222742
+      },
+      "output_clip_fraction": {
+        "mean": 0.4846618084702641,
+        "median": 0.4871724545955658
+      },
+      "reward_total": {
+        "mean": 0.6469316687434912,
+        "median": 0.6324639022350311
+      },
+      "reward_support": {
+        "mean": 0.7341749235056341,
+        "median": 0.7218303084373474
+      },
+      "reward_amount": {
+        "mean": 0.2979585890425369,
+        "median": 0.2918182611465454
+      },
+      "reference_dab_mean": {
+        "mean": 0.3148652844829485,
+        "median": 0.244061641395092
+      },
+      "output_dab_mean": {
+        "mean": 0.6118827839381993,
+        "median": 0.6094210147857666
+      },
+      "group_reward_spread": {
+        "mean": 0.000326475128531456,
+        "median": 0.00031429529190063477,
+        "min": 6.479024887084961e-05,
+        "max": 0.0006258487701416016
+      },
+      "signal_fraction_at_unchanged_gate": 1.0
+    },
+    "0.25": {
+      "policy_mean_rms": {
+        "mean": 0.13445644546300173,
+        "median": 0.1348303183913231
+      },
+      "sampled_action_rms": {
+        "mean": 0.2412825853098184,
+        "median": 0.2415652722120285
+      },
+      "velocity_correction_rms": {
+        "mean": 0.0555470323888585,
+        "median": 0.05555656738579273
+      },
+      "correction_to_base_rms": {
+        "mean": 0.04548213310772553,
+        "median": 0.0456354059278965
+      },
+      "output_delta_mae_rgb01": {
+        "mean": 0.0028081476702936925,
+        "median": 0.0028189175063744187
+      },
+      "output_clip_fraction": {
+        "mean": 0.48554704734124243,
+        "median": 0.48809434473514557
+      },
+      "reward_total": {
+        "mean": 0.6497459709644318,
+        "median": 0.6355932056903839
+      },
+      "reward_support": {
+        "mean": 0.7361612087115645,
+        "median": 0.7244888842105865
+      },
+      "reward_amount": {
+        "mean": 0.3040849615354091,
+        "median": 0.2985553741455078
+      },
+      "reference_dab_mean": {
+        "mean": 0.3148652844829485,
+        "median": 0.244061641395092
+      },
+      "output_dab_mean": {
+        "mean": 0.6040411433205009,
+        "median": 0.6022650301456451
+      },
+      "group_reward_spread": {
+        "mean": 0.0008280165493488312,
+        "median": 0.0007993578910827637,
+        "min": 0.00017786026000976562,
+        "max": 0.0015676617622375488
+      },
+      "signal_fraction_at_unchanged_gate": 1.0
+    },
+    "0.5": {
+      "policy_mean_rms": {
+        "mean": 0.13445644546300173,
+        "median": 0.1348303183913231
+      },
+      "sampled_action_rms": {
+        "mean": 0.2412825853098184,
+        "median": 0.2415652722120285
+      },
+      "velocity_correction_rms": {
+        "mean": 0.11109406460309401,
+        "median": 0.11111313477158546
+      },
+      "correction_to_base_rms": {
+        "mean": 0.09096426621545106,
+        "median": 0.0912708155810833
+      },
+      "output_delta_mae_rgb01": {
+        "mean": 0.005599946092843311,
+        "median": 0.005620596464723349
+      },
+      "output_clip_fraction": {
+        "mean": 0.4870780629571527,
+        "median": 0.48962976038455963
+      },
+      "reward_total": {
+        "mean": 0.6544143431819975,
+        "median": 0.6411981880664825
+      },
+      "reward_support": {
+        "mean": 0.7394329644739628,
+        "median": 0.7285824716091156
+      },
+      "reward_amount": {
+        "mean": 0.3143397778039798,
+        "median": 0.3097643405199051
+      },
+      "reference_dab_mean": {
+        "mean": 0.3148652844829485,
+        "median": 0.244061641395092
+      },
+      "output_dab_mean": {
+        "mean": 0.591218885499984,
+        "median": 0.590649276971817
+      },
+      "group_reward_spread": {
+        "mean": 0.0016611497849225998,
+        "median": 0.001551598310470581,
+        "min": 0.0003045797348022461,
+        "max": 0.003304004669189453
+      },
+      "signal_fraction_at_unchanged_gate": 1.0
+    },
+    "1.0": {
+      "policy_mean_rms": {
+        "mean": 0.13445644546300173,
+        "median": 0.1348303183913231
+      },
+      "sampled_action_rms": {
+        "mean": 0.2412825853098184,
+        "median": 0.2415652722120285
+      },
+      "velocity_correction_rms": {
+        "mean": 0.2221881290897727,
+        "median": 0.22222626954317093
+      },
+      "correction_to_base_rms": {
+        "mean": 0.18192853219807148,
+        "median": 0.182541623711586
+      },
+      "output_delta_mae_rgb01": {
+        "mean": 0.011133806103316601,
+        "median": 0.011173333041369915
+      },
+      "output_clip_fraction": {
+        "mean": 0.49025170085951686,
+        "median": 0.49295172095298767
+      },
+      "reward_total": {
+        "mean": 0.6636586161330342,
+        "median": 0.6523042917251587
+      },
+      "reward_support": {
+        "mean": 0.745813553687185,
+        "median": 0.7360745966434479
+      },
+      "reward_amount": {
+        "mean": 0.335038804798387,
+        "median": 0.33151811361312866
+      },
+      "reference_dab_mean": {
+        "mean": 0.3148652844829485,
+        "median": 0.244061641395092
+      },
+      "output_dab_mean": {
+        "mean": 0.5664956578984857,
+        "median": 0.5671527981758118
+      },
+      "group_reward_spread": {
+        "mean": 0.003312520682811737,
+        "median": 0.0030595064163208008,
+        "min": 0.0005556344985961914,
+        "max": 0.006712377071380615
+      },
+      "signal_fraction_at_unchanged_gate": 1.0
+    }
+  },
+  "csv_sha256": "3352a6c3fc89074aae803f4affd3f1cbbc8b2e0ef4942e2228d03c1881d0f65c",
+  "elapsed_seconds": 16.05,
+  "runtime": {
+    "torch": "2.7.1+cu128",
+    "cuda": "12.8",
+    "gpu": "NVIDIA GeForce RTX 5070 Ti"
+  }
+}

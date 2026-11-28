@@ -1,0 +1,67 @@
+{
+  "base_commit": "b6a500e715f87d5dd707fae570c4f775de7a5361",
+  "branch": "run/preformal-efficacy-20261128",
+  "dataset": {
+    "official_split_used": "MIST official_train only",
+    "official_train_pairs": 4642,
+    "pilot_train_pairs": 4514,
+    "pilot_dev_pairs": 128,
+    "pilot_dev_source_prefixes": 61,
+    "identity_caveat": "source_prefix does not establish patient identity or patient-independent split",
+    "source_manifest_sha256": "bd667a845ddf15071815c6f31a042d190abc353ecf2c14f5cfc5f6d8c6695571",
+    "official_cache_index_sha256": "c6249071adebcc287716badc9c098dc119f66195a6c21754ae2a3fc3fa7f3f44",
+    "pilot_train_cache_index_sha256": "65cb98d240d32de7c8bf33f5e0a4d8d205dd2ea1fd9fd2b4997d82684bf9c8ba",
+    "pilot_dev_cache_index_sha256": "d9e63951a6ea2f595aeacc394567d237210cc76b474d317a49b2d37e9908cc73",
+    "split_file": "pilot_split.json",
+    "split_sha256": "478832c368d1cc8658a5a37e4f60877e49fa18d72ab424066b8039a03ff57591"
+  },
+  "training": {
+    "seed": 20261129,
+    "batch": 1,
+    "amp": "torch.bfloat16",
+    "flow_updates": 1000,
+    "ppo_groups": 1000,
+    "zero_action_generator_updates": 1000,
+    "ppo_candidates_per_state": 4,
+    "min_reward_spread": 1e-5,
+    "policy_velocity_limit_initial_arm": 0.1,
+    "policy_velocity_limit_followup_arm": 1.0,
+    "scale_selection_caveat": "velocity_limit=1.0 selected after examining the same pilot-dev scale sweep; evaluation is exploratory",
+    "flow1000_resumed_from_step": 64,
+    "learning_rate_decay_epochs": 10,
+    "device": "NVIDIA GeForce RTX 5070 Ti",
+    "torch": "2.7.1+cu128",
+    "cuda": "12.8"
+  },
+  "evaluation": {
+    "pairs": 128,
+    "inference_precision": "FP32",
+    "paired_crop_and_noise": true,
+    "bootstrap_unit": "source_prefix, equal weight; descriptive, not verified patient-level",
+    "bootstrap_draws": 10000,
+    "bootstrap_seed": 20261130,
+    "official_test_used": false,
+    "pytorch_tests_run": false
+  },
+  "local_checkpoint_sha256_not_uploaded": {
+    "flow1000.pt": "602c848574afffa3f0cb35094a33f44f5d650c5c028ae4d80333a56643be6c5b",
+    "ppo1000.pt_velocity_limit_0_1": "f348297524c5e67db76e11659ad46799910e17c7cac5fef1f7fc2aba7d121c69",
+    "ppo1000_velocity1.pt": "5dc96ac85a320ec2c682dd60182f1123bd775fe776810e108cf3b7dd30e48a5a",
+    "zero_action1000.pt": "84d66e1ba693b6fc0a6eaf4eda1278a41cdfa07bd49a7c2702c9211b11912b3c"
+  },
+  "uploaded_artifact_sha256": {
+    "pilot_split.json": "478832c368d1cc8658a5a37e4f60877e49fa18d72ab424066b8039a03ff57591",
+    "evaluation128_velocity1/summary.json": "5c1c6930550e11a73f2f67102ace9d84d299f974faba1c21f451f65af959743f",
+    "evaluation128_velocity1/per_pair_metrics.csv": "e94603d5f06e1dcd25e5e34b0aa872ce4fdc1d93cf470ae0a2cb8e6c4396641c",
+    "logs/pilot_flow64.log": "e6715b9692f0cafee4ff290ece466e9f1c3a03a2b0f9a1ed517bb767e795e4bb",
+    "logs/pilot_flow1000.log": "b33ba26f3e44d43040b70b358e017c4e1cca6d137fef1b991d50a6f32eaefc04",
+    "logs/ppo1000.log": "653715702ba767d6666473cb87a2d9c4ac01bbb0d2a4d5ae529c2cbd2094f756",
+    "logs/zero_action1000.log": "1e6937146fce0b5d4fa76329194ff4bc6a0dddd8dd551a4fada7468784b01683",
+    "logs/ppo1000_velocity1.log": "dae5ab82cdbab682abacb5a0f77f65c1daa45f66bc4ac8ab7bd12b06e2daef24",
+    "scripts/build_multisource_pilot.py": "53debf5a68d8295faebb71f252a456ffde379d349dce4c129b68d087ed0fc0e6",
+    "scripts/diagnose_ppo_candidate_actions.py": "8d81d73fa3c81ed28f8c568da72cd5fe6b347580fc315a5784f8f9a3d496193a",
+    "scripts/evaluate_pilot_policy.py": "a562bc639cb352be5c073933b1a4046830ae75c7ac62106356ddf6da1ecb32cf",
+    "scripts/sweep_policy_velocity_scale.py": "5c625c45ce54d3d38fd62a964b1d1b50b52bfdae6cadd132c101e6a24e21056"
+  },
+  "upload_policy": "logs, code, configs, split and numeric metrics only; no weights or images"
+}

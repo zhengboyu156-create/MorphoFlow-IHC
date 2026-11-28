@@ -131,3 +131,11 @@ CFM / PatchNCE / adversarial / PPO 奖励曲线：
 在分支 `run/preformal-efficacy-20261128` 完成了每臂 2 次更新的工程预检：区域/像素 CFM、NCE-off、GAN-off，以及 PPO/零动作两组对照。28 项测试通过，所有训练臂均生成格式 11 checkpoint。详细配置、GPU 日志、hash 和局限见[预检结果](../../artifacts/preflight_efficacy_20261128/RESULTS.md)。
 
 该运行**没有达到本指南建议的 1,000 更新/臂，也没有评估 128 对 pilot-dev**，所以只确认开关和训练路径可运行，不回答模块是否有效。短测的 PPO 奖励 spread 两组均低于 `1e-5` 门槛，`signal_fraction=0`、`accepted=0`。创新效能仍未验证；正式训练和论文主张不能据此放行。
+
+## 2026-11-29 多来源 PPO 后续筛查
+
+随后将 pilot-dev 扩展到 128 对、覆盖全部 61 个训练来源前缀，并从 pilot-train 训练 Flow1000、PPO1000 和零动作续训1000。来源前缀不是经核验的患者 ID，结果只能按前缀做描述性比较。PPO 动作尺度扫描后，在 `velocity_limit=1.0` 下重跑 PPO1000；原 `min_reward_spread=1e-5` 未变，1000 组的采样日志 `signal_fraction=1.0`、`accepted=2`。
+
+在同一固定 128 对、同裁块与噪声的 FP32 评估中，PPO-on 的 128 px support MAE 为 `0.26069`，零动作续训为 `0.27271`；PPO-on 的 DAB 总量相对误差为 `1.27362`，零动作为 `1.61097`。PPO-on 对零动作的来源前缀等权 95% 描述区间分别为 `[-0.01723,-0.00780]` 和 `[-0.40684,-0.27543]`。同一 PPO checkpoint 关掉策略后，128 px MAE 为 `0.27011`、DAB 相对误差为 `1.47612`，说明策略开关有可测差别。
+
+这是一条方向积极的探索性结果，**不能视为确认性效能证明**：`velocity_limit=1.0` 是看过同一 pilot-dev 的尺度扫描后挑选的，存在开发集选择偏差；前缀未证实为患者；support F1 在所有模型上完全相同，当前阈值没有区分能力；DAB 总量误差仍大。官方测试集未使用。完整日志、数值结果、配置/数据/权重哈希与限制见[本轮归档](../../artifacts/ppo_candidate_diagnostic_20261129/REPORT.md)。

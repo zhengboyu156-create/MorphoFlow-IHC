@@ -125,12 +125,7 @@ def reward_reference(reference, cfg, marker):
             [fraction > 0.01 for fraction in pool((target > thresholds).float())])
 
 
-def paired_expression_reward(model, generated, reference, marker, *, prepared=None):
-    """Differentiable regional DAB support/amount reward from paired IHC.
-
-    Coarse regional pooling reduces sensitivity to local serial-section shifts;
-    it does not establish exact cell-wise correspondence or correct large warps.
-    """
+def _paired_expression_reward(model, generated, reference, marker, *, prepared=None, components=False):
     cfg = model.cfg
     estimated = rgb_to_dab(generated, cfg)
     if prepared is None:
@@ -150,7 +145,7 @@ def paired_expression_reward(model, generated, reference, marker, *, prepared=No
         return torch.where(has_positive & has_negative, 0.5 * (positive + negative),
                            torch.where(has_positive, positive, negative))
 
-    scores = []
+    scores, support_scores, amount_scores = [], [], []
     for predicted_fraction, target_fraction, predicted_amount, target_amount, active, area in zip(
         predicted_fractions, target_fractions, predicted_amounts, target_amounts, active_windows, valid
     ):
@@ -160,7 +155,29 @@ def paired_expression_reward(model, generated, reference, marker, *, prepared=No
         support_score = (1 - support_error).clamp(0, 1)
         weight = cfg.intensity_weight
         scores.append(((1 - weight) * support_score + weight * amount_score).clamp(0, 1))
-    return torch.stack(scores).mean(0)
+        if components:
+            support_scores.append(support_score)
+            amount_scores.append(amount_score)
+    reward = torch.stack(scores).mean(0)
+    if not components:
+        return reward
+    return {"reward": reward,
+            "support_score": torch.stack(support_scores).mean(0),
+            "amount_score": torch.stack(amount_scores).mean(0)}
+
+
+def paired_expression_reward(model, generated, reference, marker, *, prepared=None):
+    """Differentiable regional DAB support/amount reward from paired IHC.
+
+    Coarse regional pooling reduces sensitivity to local serial-section shifts;
+    it does not establish exact cell-wise correspondence or correct large warps.
+    """
+    return _paired_expression_reward(model, generated, reference, marker, prepared=prepared)
+
+
+def paired_expression_reward_components(model, generated, reference, marker, *, prepared=None):
+    """Return the training reward and its support/amount components for diagnostics."""
+    return _paired_expression_reward(model, generated, reference, marker, prepared=prepared, components=True)
 
 
 def collect(model, policy, he, reference, marker, *, direct=False):

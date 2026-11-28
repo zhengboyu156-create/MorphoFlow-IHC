@@ -21,6 +21,13 @@ def duration(value):
     return result
 
 
+def positive_float(value):
+    result = float(value)
+    if not math.isfinite(result) or result <= 0:
+        raise argparse.ArgumentTypeError("Must be finite and positive")
+    return result
+
+
 def training_options(command, default_hours, default_batch):
     command.add_argument("--cache", type=Path, required=True)
     command.add_argument("--output", type=Path, required=True)
@@ -62,6 +69,8 @@ def main(argv=None):
     policy.add_argument("--epochs", type=positive_int, default=10)
     policy.add_argument("--groups", type=positive_int)
     policy.add_argument("--policy-lr", type=duration, help="Explicit policy learning rate")
+    policy.add_argument("--policy-velocity-limit", type=positive_float,
+                        help="Override the bounded action scale; use a fresh Flow checkpoint for a new treatment")
     policy.add_argument("--zero-action", action="store_true",
                         help="Continue Flow/critic updates with no PPO rollout or policy-guided generator action")
 

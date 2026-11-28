@@ -281,6 +281,10 @@ def train_policy(args):
     cfg = model.cfg
     if args.policy_lr is not None:
         cfg.rl_lr = args.policy_lr
+    if args.policy_velocity_limit is not None:
+        if args.zero_action:
+            raise ValueError("--policy-velocity-limit cannot be combined with --zero-action")
+        cfg.velocity_limit = args.policy_velocity_limit
     flow_optimizer, critic_optimizer = flow_optimizers(model)
     if state["stage"] == "rl" and "flow_optimizer" not in state:
         raise ValueError("Start joint training from a base flow checkpoint or resume a joint checkpoint")
@@ -303,6 +307,9 @@ def train_policy(args):
     dataset = IHCCrops(args.cache, cfg)
     run = {**training_run(args, dataset, device), "decay_epochs": args.epochs,
            "zero_action": args.zero_action}
+    if (args.policy_velocity_limit is not None
+            or (state["stage"] == "rl" and "policy_velocity_limit" in (state.get("run") or {}))):
+        run["policy_velocity_limit"] = cfg.velocity_limit
     if (state.get("run") or {}).get("cache_index_sha256") != dataset.fingerprint:
         raise ValueError("Joint training requires the same training cache as the Flow checkpoint")
     if state["stage"] == "rl":

@@ -1,0 +1,4 @@
+{"stage": "flow", "event": "start", "step": 0, "target": 64, "amp": "auto", "run": {"cache_index_sha256": "65cb98d240d32de7c8bf33f5e0a4d8d205dd2ea1fd9fd2b4997d82684bf9c8ba", "seed": 20261129, "batch": 1, "amp": "torch.bfloat16"}}
+{"stage": "flow", "step": 1, "flow_loss": 0.2236345261335373, "nce_loss": 4.66183614730835, "critic_loss": 0.7114638686180115, "adversarial_loss": 0.6931785345077515}
+{"stage": "flow", "step": 64, "flow_loss": 0.044085387140512466, "nce_loss": 3.8254168033599854, "critic_loss": 0.07181607931852341, "adversarial_loss": 0.12563830614089966}
+{"stage": "flow", "step": 64, "target": 64, "file": "runs\\multisource_pilot_20261129\\flow64.pt"}

@@ -1,0 +1,147 @@
+{
+  "diagnostic_only_no_weight_updates": true,
+  "source_commit": "b6a500e715f87d5dd707fae570c4f775de7a5361",
+  "flow_checkpoint_step": 1000,
+  "weights_sha256": "602c848574afffa3f0cb35094a33f44f5d650c5c028ae4d80333a56643be6c5b",
+  "config_sha256": "f0fd285fcb84e85737a6e008815f78c269eb3a456579978f6a315597f3d94cf0",
+  "pilot_dev_split_sha256": "478832c368d1cc8658a5a37e4f60877e49fa18d72ab424066b8039a03ff57591",
+  "pilot_dev_cache_index_sha256": "d9e63951a6ea2f595aeacc394567d237210cc76b474d317a49b2d37e9908cc73",
+  "state_count": 32,
+  "source_prefix_count_in_diagnostic": 32,
+  "candidate_count_per_state": 4,
+  "action_sampling": "policy mean + action_std * fixed standard-normal epsilon",
+  "reward_recomputation": "FP32 for candidates from both FP32 and BF16 trajectories",
+  "action_std": 0.2,
+  "reward_signal_threshold_unchanged": 1e-05,
+  "precisions": {
+    "fp32": {
+      "action_rms": {
+        "mean": 0.20078867860138416,
+        "median": 0.20077650994062424
+      },
+      "velocity_correction_rms": {
+        "mean": 0.011974396562436596,
+        "median": 0.012005655094981194
+      },
+      "correction_to_base_rms": {
+        "mean": 0.013287134883285034,
+        "median": 0.013260957319289446
+      },
+      "action_endpoint_delta_rms": {
+        "mean": 0.002993599127876223,
+        "median": 0.00300141389016062
+      },
+      "output_delta_mae_rgb01": {
+        "mean": 0.0006841565068498312,
+        "median": 0.0006811080384068191
+      },
+      "output_delta_raw_mae_rgb01": {
+        "mean": 0.0011842092735605547,
+        "median": 0.0011838636710308492
+      },
+      "reference_clip_fraction": {
+        "mean": 0.42034094594419,
+        "median": 0.42264875769615173
+      },
+      "action_clip_fraction": {
+        "mean": 0.42033299850299954,
+        "median": 0.422639861702919
+      },
+      "reward_total": {
+        "mean": 0.6120379655621946,
+        "median": 0.5923855006694794
+      },
+      "reward_support": {
+        "mean": 0.713168868329376,
+        "median": 0.6922183036804199
+      },
+      "reward_amount": {
+        "mean": 0.20751429232768714,
+        "median": 0.1712229773402214
+      },
+      "output_dab_mean": {
+        "mean": 0.8119319202378392,
+        "median": 0.8129955530166626
+      },
+      "output_dab_support_fraction": {
+        "mean": 0.39322391152381897,
+        "median": 0.3953514099121094
+      },
+      "group_reward_spread": {
+        "mean": 0.0002659521996974945,
+        "median": 0.0002027750015258789,
+        "min": 8.434057235717773e-05,
+        "max": 0.0007678866386413574
+      },
+      "signal_fraction_at_existing_gate": 1.0
+    },
+    "bf16": {
+      "action_rms": {
+        "mean": 0.20078867860138416,
+        "median": 0.20077650994062424
+      },
+      "velocity_correction_rms": {
+        "mean": 0.011976511974353343,
+        "median": 0.012007815763354301
+      },
+      "correction_to_base_rms": {
+        "mean": 0.013287134854181204,
+        "median": 0.013260957319289446
+      },
+      "action_endpoint_delta_rms": {
+        "mean": 0.0029941279972263146,
+        "median": 0.0030019539408385754
+      },
+      "output_delta_mae_rgb01": {
+        "mean": 0.0007150282044676715,
+        "median": 0.0007129673031158745
+      },
+      "output_delta_raw_mae_rgb01": {
+        "mean": 0.0012390856509227888,
+        "median": 0.0012375035439617932
+      },
+      "reference_clip_fraction": {
+        "mean": 0.42047005146741867,
+        "median": 0.4228026121854782
+      },
+      "action_clip_fraction": {
+        "mean": 0.42046341206878424,
+        "median": 0.42279116809368134
+      },
+      "reward_total": {
+        "mean": 0.6120814932510257,
+        "median": 0.5924144685268402
+      },
+      "reward_support": {
+        "mean": 0.7132184281945229,
+        "median": 0.6923117339611053
+      },
+      "reward_amount": {
+        "mean": 0.20753370149759576,
+        "median": 0.1712520495057106
+      },
+      "output_dab_mean": {
+        "mean": 0.8118874528445303,
+        "median": 0.8129472136497498
+      },
+      "output_dab_support_fraction": {
+        "mean": 0.3931264579296112,
+        "median": 0.3952484130859375
+      },
+      "group_reward_spread": {
+        "mean": 0.00026644207537174225,
+        "median": 0.0002053976058959961,
+        "min": 8.320808410644531e-05,
+        "max": 0.000764012336730957
+      },
+      "signal_fraction_at_existing_gate": 1.0
+    }
+  },
+  "elapsed_seconds": 13.41,
+  "runtime": {
+    "torch": "2.7.1+cu128",
+    "cuda": "12.8",
+    "gpu": "NVIDIA GeForce RTX 5070 Ti"
+  },
+  "csv_sha256": "4b2fb1031d02caf8e65b685a1abe69964f8a61a9c30be6428f23c1f94712d56a"
+}
