@@ -35,3 +35,8 @@ Loaded the joint checkpoint and generated a prediction from one trainA image wit
 The smoke run passed the code, cache, Flow/PPO update, checkpoint and policy-guided full-image inference checks. It meets the engineering preflight criterion for beginning the formal 40+10 run. It does not measure official test metrics or establish that any module improves pathology results.
 
 The checkpoints and generated image remain local and are excluded from Git.
+
+
+## Interpretation clarification
+
+The phrase “meets the engineering preflight criterion for beginning the formal 40+10 run” refers only to code execution, cache integrity, checkpoint and inference plumbing. It is **not an efficacy gate**. The 8 Flow updates, 8 PPO groups and one training-image inference do not establish that regional CFM tolerates displacement, PatchNCE preserves morphology, PatchGAN improves IHC appearance, or PPO improves held-out regional staining. The efficacy status is **not yet tested**; follow `docs/experiments/PREFORMAL_EFFICACY_GUIDE_20261128.md` before making any such claim. The official 1,000-pair test split remains reserved for the locked final evaluation.
