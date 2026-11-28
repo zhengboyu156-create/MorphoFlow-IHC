@@ -31,7 +31,7 @@ The 128 px value is the scale used by the PPO regional reward. These are regiona
 
 ## Standardized comparison metrics (added 2026-11-28)
 
-The Flow-only checkpoint was evaluated using the same MIST HER2 comparison protocol used for the MAPS-GAN results. This is the official `TrainValAB/valA+valB` evaluation cohort: 1,000 paired images at native 1024×1024 RGB. Inference used FP32, four-step Euler sampling, per-image fixed noise seed 1234, with no resize/crop/flip and no PPO policy.
+The Flow-only checkpoint was evaluated using the same MIST HER2 comparison protocol used for the MAPS-GAN results. This is the official `TrainValAB/valA+valB` evaluation cohort: 1,000 paired images at native 1024×1024 RGB. Inference used FP32, four-step Euler sampling, reinitializing the same numeric noise seed 1234 for each image, with no resize/crop/flip and no PPO policy. The later audit below identifies this shared-noise pattern as inadequate for a paired cohort and requires deterministic pair-specific noise for reevaluation.
 
 | Metric | Result | Aggregation |
 |---|---:|---|
@@ -50,3 +50,12 @@ The direct Fiji macro produced 1,000 unique rows for both real and generated ima
 - Per-image values and Fiji IntDen inputs: `per_image_comparison_metrics.csv`
 - Reproducible evaluator and Fiji macro: `evaluate_comparison_metrics.py`, `direct_fiji_intden.ijm`
 - The predictions were generated in 827.6 s. Standard metric/Fiji postprocessing reused those predictions and completed in 712.6 s.
+
+## Later code audit (2026-11-28)
+
+The metrics above are the historical output of the evaluator and training code at the recorded commit; they are not silently recalculated by later fixes. Review identified two reproducibility/training-path issues that require a fresh evaluation and a fresh training run before making claims from the corrected implementation:
+
+1. The earlier Flow-only auxiliary losses formed their fake image from a single CFM bridge-state velocity estimate. The bridge state contains a mixture of source noise and paired target IHC, and this did not match the four-step noise-to-image inference path. The corrected code feeds PatchNCE and PatchGAN a differentiable `sample_rgb` rollout from independent Gaussian noise. Because this changes training behavior and compute, the old Flow40 checkpoint is not a checkpoint of the corrected objective.
+2. The earlier evaluator reused staged Fiji/FID images when byte counts matched and reused a single noise seed for each image. The corrected evaluator refreshes staged inputs and verifies SHA-256, assigns deterministic pair-specific noise seeds, records prediction hashes/provenance, and requires Fiji's full-count completion marker plus exact-ID/geometry/bit-depth checks. Existing reported metric values remain historical; they must be recomputed with the corrected evaluator.
+
+The reported PSNR, SSIM, and grayscale `Rc` are not valid evidence of morphology preservation for cross-stain/serial-section pairs. `Rp` and `Rave` are image-level proxies, not calibrated HER2 scoring. A full-image `FID` is also sensitive to stain/color distribution and does not establish cell-level expression accuracy. The current report therefore documents a failed/weak baseline, not evidence that the method's mechanism works. No corrected long training or full 1,000-image reevaluation is implied by this code update.

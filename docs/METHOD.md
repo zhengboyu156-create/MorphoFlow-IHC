@@ -20,7 +20,7 @@ The generator is trained with
 
 No separate teacher-distillation or generator reward term is included. The configured MIST weights start at `nce_weight=0.1` and `adversarial_weight=0.1`; they require empirical tuning and are not claimed optimal.
 
-The fast-algorithm variant uses the CFM model's existing velocity prediction to form a one-step Euler endpoint estimate for the auxiliary PatchNCE/PatchGAN terms during Flow-only updates. Policy-guided PPO rollouts and inference use four Euler steps, with the policy acting at step two. The shortcut preserves the three loss terms and their coefficients but changes the generated sample used by auxiliary losses; it is an algorithm variant and must be trained and evaluated separately from the eight-step version.
+For both Flow-only and joint Flow/policy updates, the auxiliary PatchNCE and PatchGAN terms use the configured noise-to-image Euler rollout from `sample_rgb`. This matches inference and avoids using the conditional bridge state—which contains a mixture of source noise and paired target IHC—as a surrogate generated image. The rollout remains differentiable, so the three generator losses update the velocity network through the full trajectory. This correction changes the training objective and compute cost; checkpoints trained with the earlier one-step shortcut are not equivalent and need a fresh run.
 
 ## Morphology features
 

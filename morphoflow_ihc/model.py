@@ -34,7 +34,7 @@ def regional_velocity_mse(prediction, target, window):
 
 
 def single_step_endpoint(state, time, velocity):
-    """Estimate x(1) with one Euler step on the straight CFM bridge."""
+    """Legacy bridge endpoint helper; not used for generated-image losses."""
     time = time.reshape(-1, *([1] * (state.ndim - 1)))
     return (state + (1 - time) * velocity).clamp(-1, 1)
 
@@ -85,15 +85,12 @@ class StainFlow(nn.Module):
         # coarse spatial expression but does not imply cell-level matching.
         flow_loss = regional_velocity_mse(prediction, target_velocity, self.cfg.flow_region)
 
-        if policy is None:
-            # Along the sigma=0 conditional bridge, the target velocity is
-            # constant. Reuse the CFM prediction for one-step endpoint losses
-            # instead of running a full ODE trajectory on every Flow update.
-            generated = single_step_endpoint(z, t, prediction)
-        else:
-            # PPO still evaluates the policy on its deployment-style rollout.
-            from .trajectory import sample_rgb
-            generated = sample_rgb(self, he, marker, torch.randn_like(he), policy)
+        # Use the same noise-to-endpoint solver path for auxiliary generator
+        # losses that is used at inference. A CFM bridge state z contains part
+        # of the paired IHC target; using it as the auxiliary fake would make
+        # PatchNCE/PatchGAN see a different distribution from deployment.
+        from .trajectory import sample_rgb
+        generated = sample_rgb(self, he, marker, torch.randn_like(he), policy)
         return flow_loss, self.morphology_loss(he, generated), generated
 
 

@@ -18,7 +18,7 @@ import torch.nn.functional as F
 # Pin imports to the exact checkout whose weights and config are being tested.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from morphoflow_ihc.config import read_config
+from morphoflow_ihc.config import Config, read_config
 from morphoflow_ihc.engine import precision
 from morphoflow_ihc.model import StainFlow
 from morphoflow_ihc.stains import canonical_size, decompose
@@ -31,6 +31,12 @@ def sha256(path):
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def image_seed(base_seed, pair_key):
+    """Stable, distinct seed for each official paired image."""
+    token = f"{int(base_seed)}:{pair_key[0]}/{pair_key[1]}".encode("utf-8")
+    return int.from_bytes(hashlib.sha256(token).digest()[:8], "big") & ((1 << 63) - 1)
 
 
 def support_fraction_mae(estimate, actual, tissue, threshold, window):
@@ -62,14 +68,31 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--checkpoint-step", type=int,
+                        help="Step from checkpoint metadata; required to identify a raw state-dict checkpoint")
     args = parser.parse_args()
 
     cfg = read_config(args.config)
     device = torch.device(args.device)
     weights_hash = sha256(args.weights)
     state = torch.load(args.weights, map_location="cpu", weights_only=True)
+    if isinstance(state, dict) and "model" in state:
+        checkpoint_step = state.get("step", args.checkpoint_step)
+        if state.get("stage") not in (None, "flow"):
+            raise RuntimeError(f"Expected a Flow checkpoint, got stage={state.get('stage')!r}")
+        if args.checkpoint_step is not None and checkpoint_step != args.checkpoint_step:
+            raise RuntimeError("--checkpoint-step does not match checkpoint metadata")
+        checkpoint_config = state.get("config")
+        if checkpoint_config is not None and Config(**checkpoint_config) != cfg:
+            raise RuntimeError("Evaluation config does not match checkpoint's embedded config")
+        model_state = state["model"]
+    else:
+        checkpoint_step = args.checkpoint_step
+        model_state = state
+    if checkpoint_step is None:
+        raise RuntimeError("Checkpoint step is unavailable; pass --checkpoint-step from its training provenance")
     model = StainFlow(cfg).to(device)
-    model.load_state_dict(state, strict=True)
+    model.load_state_dict(model_state, strict=True)
     model.eval()
 
     pairs = defaultdict(dict)
@@ -83,6 +106,8 @@ def main():
     test_pairs = sorted(pairs.items())
     if len(test_pairs) != 1000 or any(set(pair) != {"valA", "valB"} for _, pair in test_pairs):
         raise RuntimeError(f"Expected 1,000 complete official test pairs; got {len(test_pairs)}")
+    if len({Path(key[1]).stem for key, _ in test_pairs}) != len(test_pairs):
+        raise RuntimeError("Official pairs contain duplicate filename stems; result IDs would collide")
 
     args.output.mkdir(parents=True, exist_ok=True)
     csv_path = args.output / "per_image_metrics.csv"
@@ -110,9 +135,8 @@ def main():
 
         he_rgb = np.asarray(he_image)
         he = torch.from_numpy(he_rgb.copy()).permute(2, 0, 1).float().div(127.5).sub(1).unsqueeze(0).to(device)
-        noise = torch.randn(
-            he.shape[1:], generator=torch.Generator().manual_seed(args.seed)
-        )[None].to(device)
+        sample_seed = image_seed(args.seed, key)
+        noise = torch.randn(he.shape[1:], generator=torch.Generator().manual_seed(sample_seed))[None].to(device)
         with torch.inference_mode(), precision(device, "fp32"):
             generated = sample_rgb(model, he, marker_id, noise, policy=None)
         generated_rgb = np.rint((generated.float().cpu()[0].permute(1, 2, 0).clamp(-1, 1).numpy() + 1) * 127.5).astype(np.uint8)
@@ -125,6 +149,7 @@ def main():
 
         rows.append({
             "pair_id": f"{key[0]}/{key[1]}",
+            "noise_seed": sample_seed,
             "region_support_fraction_mae_32px": support_fraction_mae(
                 predicted_dab, reference_dab, tissue, tau, cfg.region
             ),
@@ -144,14 +169,15 @@ def main():
 
     summary = {
         "checkpoint_stage": "flow",
-        "checkpoint_step": 185680,
+        "checkpoint_step": checkpoint_step,
         "weights_sha256": weights_hash,
         "config_sha256": sha256(args.config),
         "manifest_sha256": sha256(args.manifest),
         "test_split": "official MIST HER2 valA/valB (1,000 pairs)",
         "test_pair_count": len(rows),
-        "seed_per_image": args.seed,
-        "inference": "native-size full-image, 4-step Euler, FP32, no PPO policy",
+        "base_seed": args.seed,
+        "noise_seed_policy": "sha256(base_seed, source_prefix/filename), first 63 bits; seed recorded per image",
+        "inference": f"native-size full-image, {cfg.ode_steps}-step Euler, FP32, no PPO policy",
         "metrics": {},
         "elapsed_seconds": round(time.time() - started, 1),
     }

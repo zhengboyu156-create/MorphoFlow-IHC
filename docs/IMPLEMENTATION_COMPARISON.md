@@ -26,7 +26,7 @@ The generator objective has three terms:
 
 The discriminator has its own real/fake PatchGAN objective. PPO has a separate policy objective and paired regional-DAB reward; that reward is not added again to the generator loss. After the policy update, its mean action guides the rollout used for the generator's PatchNCE and adversarial terms, allowing those gradients to update the flow network through the corrected trajectory. The policy's parameters are held fixed for that generator step. Thus the policy participates in alternating joint training without becoming a fourth generator-loss term.
 
-The fast-algorithm branch reuses the velocity prediction already computed for CFM as a one-step Euler endpoint estimate for PatchNCE/PatchGAN during Flow-only training. This relies on the ideal straight conditional bridge having constant velocity; it is approximate for the learned field. PPO updates retain policy-guided trajectories but use a 4-step Euler solver (action step 2) rather than 8 steps. Inference uses the same 4-step solver.
+During Flow-only and joint updates, PatchNCE/PatchGAN now consume the differentiable `sample_rgb` rollout from independent Gaussian noise using the configured four-step Euler solver. The earlier Flow-only one-step shortcut reused the CFM bridge state, which contains paired-target information and did not match inference. The corrected path aligns the auxiliary losses with deployment but increases training compute; prior shortcut-trained checkpoints are a separate algorithm variant. PPO continues to apply its action at step 2 of the four-step solver.
 
 ## What is and is not copied
 

@@ -20,7 +20,7 @@ from pytorch_fid.fid_score import calculate_fid_given_paths
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from morphoflow_ihc.config import read_config
+from morphoflow_ihc.config import Config, read_config
 from morphoflow_ihc.engine import precision
 from morphoflow_ihc.model import StainFlow
 from morphoflow_ihc.trajectory import sample_rgb
@@ -38,6 +38,32 @@ def sha256(path):
     return h.hexdigest()
 
 
+def image_seed(base_seed, pair_key):
+    """Derive a stable, distinct random seed for each paired input."""
+    token = f"{int(base_seed)}:{pair_key[0]}/{pair_key[1]}".encode("utf-8")
+    return int.from_bytes(hashlib.sha256(token).digest()[:8], "big") & ((1 << 63) - 1)
+
+
+def stage_images(sources, input_dir):
+    """Refresh staged files and verify bytes; never trust size-only cache hits."""
+    input_dir.mkdir(parents=True, exist_ok=True)
+    expected = set()
+    for stem, src in sources.items():
+        dst = input_dir / (stem + src.suffix.lower())
+        expected.add(dst.name)
+        dst.unlink(missing_ok=True)
+        try:
+            os.link(src, dst)
+        except OSError:
+            shutil.copy2(src, dst)
+        if sha256(dst) != sha256(src):
+            raise RuntimeError(f"Staged image hash mismatch: {src} -> {dst}")
+    for path in input_dir.iterdir():
+        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".tif", ".tiff"} \
+                and path.name not in expected:
+            path.unlink()
+
+
 def image_map(folder):
     result = {}
     for path in folder.iterdir():
@@ -53,17 +79,7 @@ def run_fiji(tag, sources, root, executable, macro_source):
     # on a Chinese-named Windows path, which can leave the Fiji launcher idle.
     stage = Path(__file__).resolve().parent / "fiji_ascii" / tag
     input_dir = stage / "images"
-    input_dir.mkdir(parents=True, exist_ok=True)
-    for stem, src in sources.items():
-        dst = input_dir / (stem + src.suffix.lower())
-        if dst.exists() and dst.stat().st_size == src.stat().st_size:
-            continue
-        if dst.exists():
-            dst.unlink()
-        try:
-            os.link(src, dst)
-        except OSError:
-            shutil.copy2(src, dst)
+    stage_images(sources, input_dir)
 
     output_csv = stage / "intden.csv"
     output_csv.unlink(missing_ok=True)
@@ -74,6 +90,12 @@ def run_fiji(tag, sources, root, executable, macro_source):
                "-macro", str(macro), f"{input_dir},{output_csv}"]
     with log.open("w", encoding="utf-8", errors="replace") as stream:
         proc = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, timeout=3 * 60 * 60)
+    log_text = log.read_text(encoding="utf-8", errors="replace")
+    completion_marker = f"DONE count={len(sources)}"
+    if completion_marker not in log_text:
+        raise RuntimeError(
+            f"Fiji did not report successful completion for {tag}; exit={proc.returncode}; see {log}"
+        )
     if not output_csv.exists():
         raise RuntimeError(f"Fiji did not write {tag} CSV; exit={proc.returncode}; see {log}")
     values = {}
@@ -88,8 +110,16 @@ def run_fiji(tag, sources, root, executable, macro_source):
             values[stem] = float(row["IntDen"])
     if set(values) != set(sources):
         raise RuntimeError(f"Fiji IDs mismatch for {tag}: got {len(values)}, expected {len(sources)}")
+    root.mkdir(parents=True, exist_ok=True)
+    archived_csv = root / f"{tag}_intden.csv"
+    archived_log = root / f"{tag}_fiji.log"
+    shutil.copy2(output_csv, archived_csv)
+    shutil.copy2(log, archived_log)
+    if proc.returncode != 0:
+        print(json.dumps({"warning": "Fiji returned nonzero after writing its completion marker",
+                          "fiji": tag, "exit_code": proc.returncode}), flush=True)
     print(json.dumps({"fiji": tag, "rows": len(values), "exit_code": proc.returncode}), flush=True)
-    return values, output_csv, log, proc.returncode
+    return values, archived_csv, archived_log, proc.returncode
 
 
 def main():
@@ -101,6 +131,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--checkpoint-step", type=int,
+                        help="Training step from the checkpoint provenance; read from a full checkpoint when available")
     parser.add_argument("--reuse-predictions", action="store_true",
                         help="Reuse a complete, exact-ID prediction directory from an interrupted postprocess")
     parser.add_argument("--fiji", type=Path, default=DEFAULT_FIJI)
@@ -126,25 +158,62 @@ def main():
     test_pairs = sorted(pairs.items())
     if len(test_pairs) != 1000 or any(set(pair) != {"valA", "valB"} for _, pair in test_pairs):
         raise RuntimeError(f"Expected 1,000 complete official pairs, got {len(test_pairs)}")
+    expected = {Path(key[1]).stem for key, _ in test_pairs}
+    if len(expected) != len(test_pairs):
+        raise RuntimeError("Official pairs contain duplicate filename stems; prediction IDs would collide")
 
     args.output.mkdir(parents=True, exist_ok=True)
     pred_dir = args.output / "predictions"
     pred_dir.mkdir(exist_ok=True)
-    expected = {Path(key[1]).stem for key, _ in test_pairs}
     pred = image_map(pred_dir)
-    if args.reuse_predictions and set(pred) != expected:
-        raise RuntimeError(f"Cannot reuse predictions: got {len(pred)}, expected {len(expected)} exact IDs")
-    if pred and not args.reuse_predictions:
-        raise RuntimeError("Prediction directory is nonempty; pass --reuse-predictions after verifying IDs")
     config_hash = sha256(args.config)
     weight_hash = sha256(args.weights)
     manifest_hash = sha256(args.manifest)
+    state = torch.load(args.weights, map_location="cpu", weights_only=True)
+    if isinstance(state, dict) and "model" in state:
+        checkpoint_step = state.get("step", args.checkpoint_step)
+        if state.get("stage") not in (None, "flow"):
+            raise RuntimeError(f"Expected a Flow checkpoint, got stage={state.get('stage')!r}")
+        if args.checkpoint_step is not None and checkpoint_step != args.checkpoint_step:
+            raise RuntimeError("--checkpoint-step does not match the checkpoint metadata")
+        checkpoint_config = state.get("config")
+        if checkpoint_config is not None and Config(**checkpoint_config) != cfg:
+            raise RuntimeError("Evaluation config does not match the checkpoint's embedded config")
+        model_state = state["model"]
+    else:
+        checkpoint_step = args.checkpoint_step
+        model_state = state
+    if checkpoint_step is None:
+        raise RuntimeError("Checkpoint step is unavailable; pass --checkpoint-step from its training provenance")
+    prediction_meta_path = pred_dir / "prediction_provenance.json"
+    expected_prediction_meta = {
+        "weights_sha256": weight_hash,
+        "config_sha256": config_hash,
+        "manifest_sha256": manifest_hash,
+        "checkpoint_step": checkpoint_step,
+        "base_seed": args.seed,
+        "seed_policy": "sha256(base_seed, source_prefix/filename), first 63 bits",
+        "inference": f"native 1024 RGB, FP32, {cfg.ode_steps}-step Euler, no policy",
+    }
+    if args.reuse_predictions:
+        if set(pred) != expected:
+            raise RuntimeError(f"Cannot reuse predictions: got {len(pred)}, expected {len(expected)} exact IDs")
+        if not prediction_meta_path.is_file():
+            raise RuntimeError("Prediction provenance is missing; regenerate predictions with this evaluator")
+        prediction_meta = json.loads(prediction_meta_path.read_text(encoding="utf-8"))
+        for key, value in expected_prediction_meta.items():
+            if prediction_meta.get(key) != value:
+                raise RuntimeError(f"Prediction provenance mismatch for {key}; regenerate predictions")
+        recorded_hashes = prediction_meta.get("prediction_sha256", {})
+        if set(recorded_hashes) != expected or any(sha256(pred[name]) != recorded_hashes[name] for name in expected):
+            raise RuntimeError("Prediction file hashes do not match provenance; regenerate predictions")
+    elif pred:
+        raise RuntimeError("Prediction directory is nonempty; pass --reuse-predictions with matching provenance")
     model = None
     marker_id = None
     if not args.reuse_predictions:
-        state = torch.load(args.weights, map_location="cpu", weights_only=True)
         model = StainFlow(cfg).to(device)
-        model.load_state_dict(state, strict=True)
+        model.load_state_dict(model_state, strict=True)
         model.eval()
         marker_id = torch.tensor([cfg.marker_id("HER2")], device=device)
     rows = []
@@ -155,7 +224,6 @@ def main():
         name = Path(key[1]).stem
         he_path = args.data_root / "valA" / key[0] / key[1]
         ihc_path = args.data_root / "valB" / key[0] / key[1]
-        he_paths[name], ihc_paths[name] = he_path, ihc_path
         with Image.open(he_path) as raw:
             he_image = raw.convert("RGB")
         with Image.open(ihc_path) as raw:
@@ -166,7 +234,8 @@ def main():
 
         if not args.reuse_predictions:
             he = torch.from_numpy(he_rgb.copy()).permute(2, 0, 1).float().div(127.5).sub(1)[None].to(device)
-            noise = torch.randn(he.shape[1:], generator=torch.Generator().manual_seed(args.seed))[None].to(device)
+            sample_seed = image_seed(args.seed, key)
+            noise = torch.randn(he.shape[1:], generator=torch.Generator().manual_seed(sample_seed))[None].to(device)
             with torch.inference_mode(), precision(device, "fp32"):
                 generated = sample_rgb(model, he, marker_id, noise, policy=None)
             generated_rgb = np.rint((generated.float().cpu()[0].permute(1, 2, 0).clamp(-1, 1).numpy() + 1) * 127.5).astype(np.uint8)
@@ -189,6 +258,8 @@ def main():
             raise RuntimeError(f"Undefined grayscale correlation: {name}")
         rows.append({
             "stem": name,
+            "pair_id": f"{key[0]}/{key[1]}",
+            "noise_seed": image_seed(args.seed, key),
             "PSNR": float(peak_signal_noise_ratio(target, generated_rgb, data_range=255)),
             "SSIM": float(structural_similarity(target, generated_rgb, channel_axis=2, data_range=255)),
             "R_c_gray_Pearson": float(np.dot(x, y) / denom),
@@ -201,17 +272,17 @@ def main():
     real = ihc_paths
     if set(pred) != expected or set(real) != expected or set(he_paths) != expected:
         raise RuntimeError("Prediction / paired data IDs do not match the 1,000-image official test list")
+    if not args.reuse_predictions:
+        prediction_meta = {
+            **expected_prediction_meta,
+            "prediction_sha256": {name: sha256(pred[name]) for name in sorted(expected)},
+        }
+        temporary_meta = prediction_meta_path.with_suffix(".json.tmp")
+        temporary_meta.write_text(json.dumps(prediction_meta, indent=2) + "\n", encoding="utf-8")
+        temporary_meta.replace(prediction_meta_path)
 
     fid_reference_dir = args.output / "fid_reference_valB"
-    fid_reference_dir.mkdir(exist_ok=True)
-    for name, source in real.items():
-        target_path = fid_reference_dir / (name + source.suffix.lower())
-        if not target_path.exists() or target_path.stat().st_size != source.stat().st_size:
-            target_path.unlink(missing_ok=True)
-            try:
-                os.link(source, target_path)
-            except OSError:
-                shutil.copy2(source, target_path)
+    stage_images(real, fid_reference_dir)
     fid_real = image_map(fid_reference_dir)
     if set(fid_real) != expected:
         raise RuntimeError(f"FID reference staging mismatch: {len(fid_real)} / {len(expected)}")
@@ -251,32 +322,34 @@ def main():
         "split": "Official TrainValAB/valA+valB evaluation cohort",
         "image_count": len(rows),
         "checkpoint_stage": "flow",
-        "checkpoint_step": 185680,
+        "checkpoint_step": checkpoint_step,
         "weights_sha256": weight_hash,
         "config_sha256": config_hash,
         "manifest_sha256": manifest_hash,
         "prediction_ids_match": True,
         "native_geometry": "1024x1024 RGB; no resize/crop/flip at inference",
-        "inference": "FP32, 4-step Euler, fixed noise seed 1234 per image, no PPO policy",
+        "inference": f"FP32, {cfg.ode_steps}-step Euler, deterministic pair-specific noise, no PPO policy",
+        "noise_seed_policy": "sha256(base_seed, source_prefix/filename), first 63 bits; recorded per image",
         "metrics": metrics,
         "fiji": {
             "method": "Direct Fiji macro: Colour Deconvolution H-DAB Colour_2, 8-bit, whole-image IntDen, no threshold/ROI",
             "per_image_intden_columns": ["real_IHC_Fiji_IntDen", "generated_IHC_Fiji_IntDen"],
             "real_rows": len(real_intden), "generated_rows": len(pred_intden),
             "real_exit_code": real_rc, "generated_exit_code": pred_rc,
-            "exit_code_note": "Both runs returned code 1; accepted only after 1,000 unique expected IDs and 1024x1024 8-bit rows were validated.",
+            "completion_marker_verified": True,
+            "exit_code_note": "Each Fiji run must print its expected DONE count and pass exact-ID, 1024x1024, 8-bit CSV validation; nonzero launcher exit is recorded as a warning.",
         },
         "aggregation": {
             "PSNR_SSIM": "mean of per-image RGB metrics, uint8 data_range=255",
-            "R_c": "mean of per-image grayscale Pearson correlations between generated IHC and source H&E",
-            "R_p": "Pearson correlation of per-image Fiji IntDen values, real IHC versus generated IHC",
-            "R_ave": "(R_c + R_p) / 2",
+            "R_c": "mean of per-image grayscale Pearson correlations between generated IHC and source H&E; proxy only",
+            "R_p": "Pearson correlation of per-image Fiji IntDen values, real IHC versus generated IHC; proxy only",
+            "R_ave": "(R_c + R_p) / 2; nonstandard proxy, not a calibrated clinical score",
             "FID": "pytorch-fid InceptionV3 2048-d features; batch_size=4",
         },
         "per_image_metrics_csv": per_image_path.name,
         "elapsed_seconds": round(time.time() - started, 1),
     }
-    out = args.output / "comparison_metrics.json"
+    out = args.output / "comparison_metrics_summary.json"
     out.write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(json.dumps({"status": "COMPLETE", "image_count": len(rows), "metrics": metrics,
                       "summary": str(out), "elapsed_seconds": summary["elapsed_seconds"]},

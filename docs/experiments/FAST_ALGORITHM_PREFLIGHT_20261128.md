@@ -21,3 +21,7 @@
 ## Interpretation
 
 The unit tests establish implementation behavior, not image quality or faster end-to-end convergence. The initial Flow interval is about 4.1x faster than the archived run's observed approximately 1.17 s/step, but longer-window throughput and validation metrics are needed before treating this as a stable speed or quality improvement. The run retains the official split and training schedule, but changing the endpoint estimate and solver steps creates a new algorithmic variant.
+
+## Superseding audit note (2026-11-28)
+
+The endpoint shortcut described above was later found to use the CFM bridge state as the generated image for PatchNCE/PatchGAN, so the auxiliary losses did not see the same noise-to-image distribution as inference. The corrected code removes this shortcut and uses the configured differentiable Euler rollout for auxiliary losses. The shortcut's speed measurements and Flow40 checkpoint remain historical; they do not validate or represent the corrected training objective. See `FLOW40_TRAIN_EVAL_AUDIT_FIXES_20261128.md` for the full audit and fresh-run requirement.
